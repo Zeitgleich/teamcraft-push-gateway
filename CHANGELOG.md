@@ -15,8 +15,9 @@ First release, for TeamCraft 1.0.
 - The push gateway: signed `POST /v1/push` forwards sealed wake-ups to APNs (alert and VoIP) and
   FCM; dead tokens come back as `410 token_gone`.
 - Server registration with an Ed25519 key (`POST /v1/servers`), opaque server IDs, replay protection.
-- Per-server rate, burst and daily quota, per-token limit, registration limits, block list and an
-  operator CLI (`servers list|block|unblock|limits|allow`).
+- Per-server rate, burst and daily quota, per-token limit (stricter for calls), a budget per push
+  service shared by all servers, registration limits (IPv6 per /48), block list, pruning of servers
+  that never push, and an operator CLI (`servers list|block|unblock|limits|allow|delete|prune`).
 - `/healthz` and `/metrics` on a separate listener; SQLite state; container image with signature,
   provenance attestation and SBOMs.
 

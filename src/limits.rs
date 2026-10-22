@@ -16,13 +16,26 @@ pub const DAY_MS: u64 = 86_400_000;
 /// Entries kept at most; beyond this the sweep drops the oldest first. A guard against floods of
 /// distinct tokens, not something a healthy server reaches.
 const MAX_TRACKED_TOKENS: usize = 1_000_000;
+/// Request IDs remembered at most. When full, new requests wait for old ones to expire: forgetting
+/// them early would let a captured request be replayed.
+const MAX_TRACKED_REQUESTS: usize = 1_000_000;
 
 /// Why a request is held back, with how long the sender should wait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Limited {
-  ServerRate { retry_after_secs: u32 },
-  DailyQuota { retry_after_secs: u32 },
-  Token { retry_after_secs: u32 },
+  ServerRate {
+    retry_after_secs: u32,
+  },
+  DailyQuota {
+    retry_after_secs: u32,
+  },
+  Token {
+    retry_after_secs: u32,
+  },
+  /// All servers together are over the push service's budget.
+  Global {
+    retry_after_secs: u32,
+  },
   Replay,
 }
 
@@ -37,6 +50,8 @@ pub struct ServerLimits {
 #[derive(Default)]
 pub struct Limiter {
   buckets: Mutex<HashMap<String, Bucket>>,
+  /// One bucket per push service, shared by every server.
+  global: Mutex<HashMap<&'static str, Bucket>>,
   days: Mutex<HashMap<String, DayCounters>>,
   tokens: Mutex<HashMap<u64, Window>>,
   replay: Mutex<HashMap<(String, [u8; 16]), u64>>,
@@ -128,6 +143,30 @@ impl Limiter {
     Ok(())
   }
 
+  /// Takes one push from the push service's bucket that all servers share.
+  pub fn admit_global(
+    &self,
+    provider: &'static str,
+    per_second: u32,
+    burst: u32,
+    now_ms: u64,
+  ) -> Result<(), Limited> {
+    let mut global = lock(&self.global);
+    let bucket = global.entry(provider).or_insert(Bucket {
+      tokens: f64::from(burst.max(1)),
+      updated_ms: now_ms,
+    });
+    let rate = f64::from(per_second.max(1));
+    let elapsed = now_ms.saturating_sub(bucket.updated_ms) as f64 / 1000.0;
+    bucket.tokens = (bucket.tokens + elapsed * rate).min(f64::from(burst.max(1)));
+    bucket.updated_ms = now_ms;
+    if bucket.tokens < 1.0 {
+      return Err(Limited::Global { retry_after_secs: 1 });
+    }
+    bucket.tokens -= 1.0;
+    Ok(())
+  }
+
   /// Counts a push towards the day once the push service has answered.
   pub fn record(&self, server_id: &str, outcome: Outcome) {
     let mut days = lock(&self.days);
@@ -157,9 +196,10 @@ impl Limiter {
       .collect()
   }
 
-  /// At most `per_minute` pushes per device token and minute. The token is only hashed here.
-  pub fn admit_token(&self, token: &str, per_minute: u32, now_ms: u64) -> Result<(), Limited> {
-    let key = self.token_hasher.hash_one(token);
+  /// At most `per_minute` pushes per device token, class (`is_call`) and minute, over all servers.
+  /// The token is only hashed here.
+  pub fn admit_token(&self, token: &str, is_call: bool, per_minute: u32, now_ms: u64) -> Result<(), Limited> {
+    let key = self.token_hasher.hash_one((token, is_call));
     let mut tokens = lock(&self.tokens);
     let window = tokens.entry(key).or_insert(Window {
       started_ms: now_ms,
@@ -192,6 +232,12 @@ impl Limiter {
     match replay.get(&(server_id.to_owned(), request_id)) {
       Some(&expires_ms) if expires_ms > now_ms => Err(Limited::Replay),
       _ => {
+        if replay.len() >= MAX_TRACKED_REQUESTS {
+          replay.retain(|_, expires_ms| *expires_ms > now_ms);
+          if replay.len() >= MAX_TRACKED_REQUESTS {
+            return Err(Limited::Global { retry_after_secs: 1 });
+          }
+        }
         replay.insert((server_id.to_owned(), request_id), now_ms + window_ms);
         Ok(())
       },
@@ -208,18 +254,13 @@ impl Limiter {
   ) -> Result<(), Limited> {
     let mut windows = lock(&self.registrations);
     let key = address_key(address);
-    let entry = windows.per_address.entry(key).or_insert(Window {
-      started_ms: now_ms,
-      count: 0,
-    });
-    if now_ms.saturating_sub(entry.started_ms) >= HOUR_MS {
-      *entry = Window {
-        started_ms: now_ms,
-        count: 0,
-      };
-    }
-    let retry_after_secs = secs_ceil(HOUR_MS - now_ms.saturating_sub(entry.started_ms));
-    if entry.count >= per_address {
+    // Looked at without adding an entry: refused attempts must not grow the map.
+    let (used, started_ms) = match windows.per_address.get(&key) {
+      Some(window) if now_ms.saturating_sub(window.started_ms) < HOUR_MS => (window.count, window.started_ms),
+      _ => (0, now_ms),
+    };
+    let retry_after_secs = secs_ceil(HOUR_MS - now_ms.saturating_sub(started_ms));
+    if used >= per_address {
       return Err(Limited::ServerRate { retry_after_secs });
     }
     let global_window = windows.global.get_or_insert(Window {
@@ -236,9 +277,13 @@ impl Limiter {
       return Err(Limited::ServerRate { retry_after_secs });
     }
     global_window.count += 1;
-    if let Some(entry) = windows.per_address.get_mut(&address_key(address)) {
-      entry.count += 1;
-    }
+    windows.per_address.insert(
+      key,
+      Window {
+        started_ms,
+        count: used + 1,
+      },
+    );
     Ok(())
   }
 
@@ -248,7 +293,13 @@ impl Limiter {
     let mut tokens = lock(&self.tokens);
     tokens.retain(|_, window| now_ms.saturating_sub(window.started_ms) < MINUTE_MS);
     if tokens.len() > MAX_TRACKED_TOKENS {
-      tokens.clear();
+      // Over the cap even after expiry: drop the windows with the fewest pushes, keeping the
+      // busy ones (which are the ones that matter for limiting).
+      let mut counts: Vec<u32> = tokens.values().map(|window| window.count).collect();
+      let cut = counts.len() - MAX_TRACKED_TOKENS;
+      counts.select_nth_unstable(cut);
+      let threshold = counts[cut];
+      tokens.retain(|_, window| window.count >= threshold);
     }
     drop(tokens);
     lock(&self.registrations)
@@ -266,7 +317,7 @@ pub enum Outcome {
   Failed,
 }
 
-/// IPv4 per address, IPv6 per /64 (one customer usually holds a whole /64).
+/// IPv4 per address, IPv6 per /48 (a customer can hold many /64s; /48 is a common allocation).
 fn address_key(address: IpAddr) -> String {
   match address {
     IpAddr::V4(v4) => v4.to_string(),
@@ -274,10 +325,7 @@ fn address_key(address: IpAddr) -> String {
       Some(v4) => v4.to_string(),
       None => {
         let segments = v6.segments();
-        format!(
-          "{:x}:{:x}:{:x}:{:x}::/64",
-          segments[0], segments[1], segments[2], segments[3]
-        )
+        format!("{:x}:{:x}:{:x}::/48", segments[0], segments[1], segments[2])
       },
     },
   }
@@ -366,14 +414,17 @@ mod tests {
   fn one_token_gets_a_limited_number_per_minute() {
     let limiter = Limiter::default();
     for _ in 0..2 {
-      limiter.admit_token("token", 2, 0).unwrap();
+      limiter.admit_token("token", false, 2, 0).unwrap();
     }
     assert!(matches!(
-      limiter.admit_token("token", 2, 1000),
+      limiter.admit_token("token", false, 2, 1000),
       Err(Limited::Token { .. })
     ));
-    limiter.admit_token("other", 2, 1000).unwrap();
-    limiter.admit_token("token", 2, MINUTE_MS).unwrap();
+    // Calls have their own (smaller) budget.
+    limiter.admit_token("token", true, 1, 1000).unwrap();
+    assert!(limiter.admit_token("token", true, 1, 1000).is_err());
+    limiter.admit_token("other", false, 2, 1000).unwrap();
+    limiter.admit_token("token", false, 2, MINUTE_MS).unwrap();
   }
 
   #[test]
@@ -390,6 +441,32 @@ mod tests {
   }
 
   #[test]
+  fn all_servers_share_one_budget_per_push_service() {
+    let limiter = Limiter::default();
+    for _ in 0..3 {
+      limiter.admit_global("apns", 1, 3, 0).unwrap();
+    }
+    assert!(matches!(
+      limiter.admit_global("apns", 1, 3, 0),
+      Err(Limited::Global { .. })
+    ));
+    limiter.admit_global("fcm", 1, 3, 0).unwrap();
+    limiter.admit_global("apns", 1, 3, 1000).unwrap();
+  }
+
+  #[test]
+  fn refused_registrations_do_not_add_addresses() {
+    let limiter = Limiter::default();
+    let a: IpAddr = "192.0.2.1".parse().unwrap();
+    limiter.admit_registration(a, 1, 1, 0).unwrap();
+    for n in 2..50u8 {
+      let other: IpAddr = format!("192.0.2.{n}").parse().unwrap();
+      assert!(limiter.admit_registration(other, 1, 1, 1).is_err());
+    }
+    assert_eq!(lock(&limiter.registrations).per_address.len(), 1);
+  }
+
+  #[test]
   fn registrations_are_limited_per_address_and_in_total() {
     let limiter = Limiter::default();
     let a: IpAddr = "192.0.2.1".parse().unwrap();
@@ -403,9 +480,9 @@ mod tests {
   }
 
   #[test]
-  fn ipv6_is_limited_per_64_and_mapped_addresses_count_as_ipv4() {
+  fn ipv6_is_limited_per_48_and_mapped_addresses_count_as_ipv4() {
     let one: IpAddr = "2001:db8:1:2::1".parse().unwrap();
-    let other: IpAddr = "2001:db8:1:2:ffff::9".parse().unwrap();
+    let other: IpAddr = "2001:db8:1:ffff:ffff::9".parse().unwrap();
     assert_eq!(address_key(one), address_key(other));
     let mapped: IpAddr = "::ffff:192.0.2.1".parse().unwrap();
     assert_eq!(address_key(mapped), "192.0.2.1");
@@ -415,7 +492,7 @@ mod tests {
   fn the_sweep_forgets_what_expired() {
     let limiter = Limiter::default();
     limiter.admit_request_id("s", [1; 16], 1000, 0).unwrap();
-    limiter.admit_token("t", 1, 0).unwrap();
+    limiter.admit_token("t", false, 1, 0).unwrap();
     limiter.sweep(2 * MINUTE_MS);
     assert!(lock(&limiter.replay).is_empty());
     assert!(lock(&limiter.tokens).is_empty());

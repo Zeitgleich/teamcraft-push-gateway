@@ -20,6 +20,9 @@ path = "teamcraft-push-gateway.db"
 # A block takes effect within this many seconds.
 server_cache_secs = 10
 flush_interval_secs = 10
+# Servers that registered but never pushed are deleted after this many days (0: never). Blocked servers
+# and keys added with `servers allow` are kept.
+prune_unused_after_days = 7
 
 [registration]
 # "open": any server can register its key. "closed": only keys added with
@@ -35,6 +38,11 @@ pushes_per_second = 50
 burst = 200
 pushes_per_day = 200000
 pushes_per_token_per_minute = 30
+# Call pushes (VoIP rings) per device token and minute, across all servers.
+call_pushes_per_token_per_minute = 6
+# All servers together, per push service: protects the publisher's APNs/FCM quotas.
+global_pushes_per_second = 2000
+global_burst = 10000
 max_body_bytes = 16384
 max_sealed_bytes = 2048
 max_ttl_secs = 604800

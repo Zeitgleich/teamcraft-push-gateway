@@ -48,6 +48,9 @@ pub struct DatabaseConfig {
   pub server_cache_secs: u64,
   /// How often usage counters are written to the database.
   pub flush_interval_secs: u64,
+  /// Servers that registered but never pushed are deleted after this many days (0: never), so
+  /// throwaway registrations don't fill `max_servers`. Blocked servers are kept.
+  pub prune_unused_after_days: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -63,7 +66,7 @@ pub enum RegistrationMode {
 #[serde(deny_unknown_fields, default)]
 pub struct RegistrationConfig {
   pub mode: RegistrationMode,
-  /// New registrations per client address and hour (IPv6: per /64).
+  /// New registrations per client address and hour (IPv6: per /48).
   pub per_address_per_hour: u32,
   /// New registrations per hour in total.
   pub global_per_hour: u32,
@@ -78,6 +81,13 @@ pub struct LimitsConfig {
   pub burst: u32,
   pub pushes_per_day: u64,
   pub pushes_per_token_per_minute: u32,
+  /// Call pushes (VoIP on iOS, high priority on Android) per device token and minute; far fewer
+  /// than messages, since a call ring can't be quiet.
+  pub call_pushes_per_token_per_minute: u32,
+  /// All servers together, per push service: protects the publisher's APNs and FCM quotas from
+  /// many servers at once (each within its own limit).
+  pub global_pushes_per_second: u32,
+  pub global_burst: u32,
   pub max_body_bytes: usize,
   /// Largest sealed wake-up.
   pub max_sealed_bytes: usize,
@@ -151,6 +161,7 @@ impl Default for DatabaseConfig {
       path: "teamcraft-push-gateway.db".into(),
       server_cache_secs: 10,
       flush_interval_secs: 10,
+      prune_unused_after_days: 7,
     }
   }
 }
@@ -173,6 +184,9 @@ impl Default for LimitsConfig {
       burst: 200,
       pushes_per_day: 200_000,
       pushes_per_token_per_minute: 30,
+      call_pushes_per_token_per_minute: 6,
+      global_pushes_per_second: 2_000,
+      global_burst: 10_000,
       max_body_bytes: 16 * 1024,
       max_sealed_bytes: 2048,
       max_ttl_secs: 7 * 24 * 3600,

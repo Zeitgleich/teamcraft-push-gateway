@@ -57,9 +57,20 @@ app and is discarded), learn who the users are, or influence the content of any 
 A **malicious or compromised TeamCraft server** can use the gateway's capacity: flood it with pushes to its
 own devices or to tokens it learned. That is bounded by per-server rate, burst and daily quota, a
 per-token limit (a device token receives at most `pushes_per_token_per_minute` wake-ups per minute no
-matter how many servers send to it), body and field limits, and the **block list**. A server can't send
-arbitrary text (the alert text is the gateway's) or choose topics (the gateway's bundle ID). Tokens are
-only ever handed to a server by the device itself.
+matter how many servers send to it; far fewer for call pushes), a budget per push service that all
+servers share, body and field limits, and the **block list**. A server can't send arbitrary text (the
+alert text is the gateway's) or choose topics (the gateway's bundle ID).
+
+Tokens are only ever handed to a server by the device itself, but **not bound to that server**: an app
+install has one token and gives it to every server it signs in to, so a server the user left (or a
+hostile one among several) can keep pushing generic alerts and call rings to the device for as long as
+the token is valid, within the per-token limits. It learns nothing and shows no content; the remedy is
+the block list. Binding tokens to servers (the app sealing the token for the gateway together with the
+server's ID and an expiry) is planned.
+
+Many registered servers multiply the per-server limits; the shared per-service budget, low limits
+for new keys where needed (`servers limits`), the per-address registration limit, pruning of servers
+that never push and the block list bound that.
 
 A **network attacker** needs a server's private key to send, and can't alter or redirect a signed request.
 TLS (the reverse proxy) protects tokens in transit.
@@ -76,18 +87,21 @@ operators.
 
 All values are settings with defaults; a per-server override is possible (`servers limits`).
 
-| Limit                               | Default  | Scope                                |
-|-------------------------------------|----------|--------------------------------------|
-| `pushes_per_second` / `burst`       | 50 / 200 | per server (token bucket)            |
-| `pushes_per_day`                    | 200,000  | per server and UTC day               |
-| `pushes_per_token_per_minute`       | 30       | per device token, across all servers |
-| `max_body_bytes`                    | 16 KiB   | per request                          |
-| `max_sealed_bytes`                  | 2 KiB    | per wake-up                          |
-| `max_ttl_secs`                      | 7 days   | per wake-up                          |
-| `timestamp_window_secs`             | 300      | per request                          |
-| `registration.per_address_per_hour` | 10       | per client address (IPv6 per /64)    |
-| `registration.global_per_hour`      | 600      | all addresses                        |
-| `registration.max_servers`          | 100,000  | total                                |
+| Limit                                       | Default        | Scope                                |
+|---------------------------------------------|----------------|--------------------------------------|
+| `pushes_per_second` / `burst`               | 50 / 200       | per server (token bucket)            |
+| `pushes_per_day`                            | 200,000        | per server and UTC day               |
+| `pushes_per_token_per_minute`               | 30             | per device token, across all servers |
+| `call_pushes_per_token_per_minute`          | 6              | call pushes per device token         |
+| `global_pushes_per_second` / `global_burst` | 2,000 / 10,000 | per push service, all servers        |
+| `max_body_bytes`                            | 16 KiB         | per request                          |
+| `max_sealed_bytes`                          | 2 KiB          | per wake-up                          |
+| `max_ttl_secs`                              | 7 days         | per wake-up                          |
+| `timestamp_window_secs`                     | 300            | per request                          |
+| `registration.per_address_per_hour`         | 10             | per client address (IPv6 per /48)    |
+| `registration.global_per_hour`              | 600            | all addresses                        |
+| `registration.max_servers`                  | 100,000        | total                                |
+| `database.prune_unused_after_days`          | 7              | servers that never pushed            |
 
 Per-token windows are kept as a process-keyed 64-bit hash that only lives in memory; tokens themselves
 are never stored or logged.

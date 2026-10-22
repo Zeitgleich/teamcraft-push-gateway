@@ -31,6 +31,8 @@ use crate::providers::Providers;
 use crate::store::{BlockState, ServerRecord, Store};
 
 const MAX_TOKEN_CHARS: usize = 4096;
+/// How long a client may take to send its request body.
+const BODY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Everything the handlers share.
 #[derive(Clone)]
@@ -139,7 +141,7 @@ async fn push_handler(
 
   let request: PushRequest = serde_json::from_slice(&body)
     .map_err(|_| state.refuse(ApiError::invalid("the body is not a push request")))?;
-  let message = validate(&state, &request).map_err(|error| state.refuse(error))?;
+  let (message, token) = validate(&state, &request).map_err(|error| state.refuse(error))?;
   let sender = state
     .providers
     .get(&request.provider)
@@ -154,15 +156,17 @@ async fn push_handler(
   let request_id = <[u8; REQUEST_ID_LEN]>::try_from(request.request_id.as_slice())
     .map_err(|_| state.refuse(ApiError::invalid("request_id must be 16 bytes")))?;
   let server_id = record.server_id.as_str();
+  // Limits first: a request that is refused anyway must not be remembered (the replay cache would
+  // otherwise grow with every refused request).
+  admit(&state, &record, &request.provider, &token, &message.kind, now_ms)
+    .await
+    .map_err(|error| state.refuse(error))?;
   state
     .limiter
     .admit_request_id(server_id, request_id, limits.timestamp_window_secs * 2000, now_ms)
     .map_err(|limited| state.limited(limited))?;
-  admit(&state, &record, &request.token, now_ms)
-    .await
-    .map_err(|error| state.refuse(error))?;
 
-  let result = sender.send(&request.token, &message).await;
+  let result = sender.send(&token, &message).await;
   let (outcome, push_result) = match &result {
     Ok(()) => (Outcome::Accepted, PushResult::Accepted),
     Err(ProviderError::Gone) => (Outcome::Gone, PushResult::TokenGone),
@@ -276,10 +280,15 @@ async fn metrics_handler(State(state): State<AppState>) -> Response {
 }
 
 async fn read_body(body: Body, max_bytes: usize) -> Result<Vec<u8>, ApiError> {
-  to_bytes(body, max_bytes)
-    .await
-    .map(|bytes| bytes.to_vec())
-    .map_err(|_| ApiError::new(ErrorCode::PayloadTooLarge, "the request body is too large"))
+  // A client that sends its (small) body slowly must not hold a connection forever.
+  match tokio::time::timeout(BODY_READ_TIMEOUT, to_bytes(body, max_bytes)).await {
+    Ok(Ok(bytes)) => Ok(bytes.to_vec()),
+    Ok(Err(_)) => Err(ApiError::new(
+      ErrorCode::PayloadTooLarge,
+      "the request body is too large",
+    )),
+    Err(_) => Err(ApiError::invalid("the request body took too long")),
+  }
 }
 
 /// Checks the server header, the timestamp and the signature of a request; then the block list.
@@ -343,7 +352,9 @@ fn verify(
 }
 
 /// Field checks that need no state; the wake-up becomes the message for the push service.
-fn validate(state: &AppState, request: &PushRequest) -> Result<PushMessage, ApiError> {
+/// The message to send and the token in its one canonical form (APNs: lower-case hex, which
+/// Apple treats case-insensitively; one device must not get a second per-token budget by case).
+fn validate(state: &AppState, request: &PushRequest) -> Result<(PushMessage, String), ApiError> {
   let limits = &state.config.limits;
   if !matches!(request.provider, PushProvider::Apns | PushProvider::Fcm) {
     return Err(ApiError::invalid("provider must be apns or fcm"));
@@ -351,6 +362,15 @@ fn validate(state: &AppState, request: &PushRequest) -> Result<PushMessage, ApiE
   if request.token.is_empty() || request.token.len() > MAX_TOKEN_CHARS {
     return Err(ApiError::invalid("the token has an invalid length"));
   }
+  let token = match request.provider {
+    PushProvider::Apns => {
+      if !request.token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ApiError::invalid("an APNs token is hex"));
+      }
+      request.token.to_ascii_lowercase()
+    },
+    _ => request.token.clone(),
+  };
   if request.sealed.as_slice().is_empty() || request.sealed.as_slice().len() > limits.max_sealed_bytes {
     return Err(ApiError::new(
       ErrorCode::PayloadTooLarge,
@@ -360,7 +380,7 @@ fn validate(state: &AppState, request: &PushRequest) -> Result<PushMessage, ApiE
   if matches!(request.kind, PushKind::Unknown(_)) || matches!(request.urgency, WireUrgency::Unknown(_)) {
     return Err(ApiError::invalid("unknown kind or urgency"));
   }
-  Ok(PushMessage {
+  let message = PushMessage {
     sealed: request.sealed.as_slice().to_vec(),
     kind: request.kind.clone(),
     urgency: match request.urgency {
@@ -368,11 +388,20 @@ fn validate(state: &AppState, request: &PushRequest) -> Result<PushMessage, ApiE
       _ => Urgency::Normal,
     },
     ttl: std::time::Duration::from_secs(u64::from(request.ttl_secs.min(limits.max_ttl_secs))),
-  })
+  };
+  Ok((message, token))
 }
 
-/// The server's rate and daily quota, then the token's.
-async fn admit(state: &AppState, record: &ServerRecord, token: &str, now_ms: u64) -> Result<(), ApiError> {
+/// The server's rate and daily quota, the token's (stricter for calls), then the push service's
+/// budget all servers share.
+async fn admit(
+  state: &AppState,
+  record: &ServerRecord,
+  provider: &PushProvider,
+  token: &str,
+  kind: &PushKind,
+  now_ms: u64,
+) -> Result<(), ApiError> {
   let day = i64::try_from(now_ms / DAY_MS).unwrap_or(i64::MAX);
   let limits = state.limits_of(record);
   // The daily total comes from the store the first time a server shows up that day.
@@ -392,9 +421,29 @@ async fn admit(state: &AppState, record: &ServerRecord, token: &str, now_ms: u64
     .limiter
     .admit_server(&record.server_id, limits, day, now_ms)
     .map_err(|limited| state.limited(limited))?;
+  let limits = &state.config.limits;
+  let is_call = *kind == PushKind::Call;
+  let per_token = if is_call {
+    limits.call_pushes_per_token_per_minute
+  } else {
+    limits.pushes_per_token_per_minute
+  };
   state
     .limiter
-    .admit_token(token, state.config.limits.pushes_per_token_per_minute, now_ms)
+    .admit_token(token, is_call, per_token, now_ms)
+    .map_err(|limited| state.limited(limited))?;
+  let provider_key = match provider {
+    PushProvider::Apns => "apns",
+    _ => "fcm",
+  };
+  state
+    .limiter
+    .admit_global(
+      provider_key,
+      limits.global_pushes_per_second,
+      limits.global_burst,
+      now_ms,
+    )
     .map_err(|limited| state.limited(limited))
 }
 
@@ -403,9 +452,10 @@ fn client_address(config: &GatewayConfig, headers: &HeaderMap, peer: IpAddr) -> 
     .server
     .maybe_client_ip_header
     .as_deref()
-    .and_then(|name| headers.get(name))
+    // The last entry is the one the trusted proxy appended, also when it adds its own header line
+    // instead of extending the client's.
+    .and_then(|name| headers.get_all(name).iter().next_back())
     .and_then(|value| value.to_str().ok())
-    // The last entry is the one the trusted proxy appended.
     .and_then(|value| value.rsplit(',').next())
     .and_then(|value| value.trim().parse().ok())
     .unwrap_or(peer)
@@ -538,6 +588,11 @@ impl AppState {
       Limited::Token { retry_after_secs } => ApiError::new(
         ErrorCode::TokenRateLimited,
         "this device receives too many pushes",
+      )
+      .with_retry_after(retry_after_secs),
+      Limited::Global { retry_after_secs } => ApiError::new(
+        ErrorCode::ProviderUnavailable,
+        "the gateway is busy; try again shortly",
       )
       .with_retry_after(retry_after_secs),
       Limited::Replay => ApiError::new(ErrorCode::ReplayedRequest, "this request ID was used already"),
