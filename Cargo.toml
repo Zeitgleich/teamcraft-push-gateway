@@ -1,0 +1,70 @@
+[package]
+name = "teamcraft-push-gateway"
+description = "Forwards sealed push wake-ups of TeamCraft servers to APNs and FCM with the publisher's credentials"
+version = "1.0.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/Zeitgleich/teamcraft-push-gateway"
+rust-version = "1.85"
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
+non_fmt_panics = "deny"
+unused_imports = "deny"
+unused_mut = "deny"
+unused_variables = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+await_holding_lock = "deny"
+borrow_interior_mutable_const = "deny"
+option_option = "deny"
+zero_sized_map_values = "deny"
+clone_on_copy = "deny"
+implicit_clone = "deny"
+needless_return = "deny"
+redundant_field_names = "deny"
+empty_structs_with_brackets = "deny"
+# No debugging leftovers, no panics in production paths (allowed in tests via clippy.toml)
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+todo = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+if_same_then_else = "allow"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+base64 = "0.22"
+# Verifies the servers' request signatures.
+ed25519-dalek = "2.2"
+figment = { version = "0.10", features = ["toml", "env"] }
+# The APNs provider token (ES256) and the Google service account assertion (RS256).
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls", "http2"] }
+# The state store: a few small tables on the gateway's own disk (docs/design.md §5).
+rusqlite = { version = "0.39", features = ["bundled"] }
+secrecy = { version = "0.10", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+socket2 = "0.6"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "http2"] }
+figment = { version = "0.10", features = ["toml", "env", "test"] }
+
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
