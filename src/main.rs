@@ -8,6 +8,8 @@
 //! teamcraft-push-gateway [--config <file>] servers unblock <server-id>
 //! teamcraft-push-gateway [--config <file>] servers limits <server-id> <per-second|default> <burst|default> <per-day|default>
 //! teamcraft-push-gateway [--config <file>] servers allow <public-key-base64url>
+//! teamcraft-push-gateway [--config <file>] servers delete <server-id>
+//! teamcraft-push-gateway [--config <file>] servers prune <days>
 //! ```
 //!
 //! The `servers` commands work on the database file directly, also while the gateway runs; a block
@@ -165,10 +167,23 @@ async fn servers(config: &GatewayConfig, args: &[&str]) -> anyhow::Result<()> {
       let bytes = <[u8; 32]>::try_from(bytes.as_slice()).context("the key must be 32 bytes")?;
       let server_id = PublicKey::from_bytes(bytes).server_id();
       store.insert_server(&server_id, bytes, now_secs).await?;
+      store.mark_operator_added(&server_id).await?;
       writeln!(out, "allowed {server_id}")?;
     },
+    ["delete", server_id] => {
+      anyhow::ensure!(
+        store.delete_server(server_id).await?,
+        "unknown server {server_id}"
+      );
+      writeln!(out, "deleted {server_id}")?;
+    },
+    ["prune", days] => {
+      let days: i64 = days.parse().context("days must be a number")?;
+      let removed = store.prune_unused(now_secs - days * 86_400).await?;
+      writeln!(out, "pruned {removed} servers that never pushed")?;
+    },
     _ => bail!(
-      "usage: servers list | block <id> <reason> | unblock <id> | limits <id> <n|default> <n|default> <n|default> | allow <key>"
+      "usage: servers list | block <id> <reason> | unblock <id> | limits <id> <n|default> <n|default> <n|default> | allow <key> | delete <id> | prune <days>"
     ),
   }
   Ok(())

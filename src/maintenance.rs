@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::app::{AppState, now_millis};
 
@@ -12,11 +12,32 @@ pub async fn run(state: AppState) {
     state.config.database.flush_interval_secs.max(1),
   ));
   let mut sweep = tokio::time::interval(Duration::from_secs(60));
+  let mut prune = tokio::time::interval(Duration::from_secs(3600));
   loop {
     tokio::select! {
       _ = flush.tick() => flush_usage(&state).await,
       _ = sweep.tick() => state.limiter.sweep(now_millis()),
+      _ = prune.tick() => prune_unused(&state).await,
     }
+  }
+}
+
+/// Deletes servers that registered and never pushed, so throwaway registrations don't keep
+/// `max_servers` full.
+async fn prune_unused(state: &AppState) {
+  let days = state.config.database.prune_unused_after_days;
+  if days == 0 {
+    return;
+  }
+  let now_secs = i64::try_from(now_millis() / 1000).unwrap_or(i64::MAX);
+  match state
+    .store
+    .prune_unused(now_secs - i64::from(days) * 86_400)
+    .await
+  {
+    Ok(0) => {},
+    Ok(removed) => info!(removed, "pruned servers that never pushed"),
+    Err(error) => warn!(%error, "pruning unused servers failed"),
   }
 }
 

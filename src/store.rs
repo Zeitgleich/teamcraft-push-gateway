@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS servers (
   blocked_at        INTEGER,
   pushes_per_second INTEGER,
   burst             INTEGER,
-  pushes_per_day    INTEGER
+  pushes_per_day    INTEGER,
+  -- Added by the operator (`servers allow`): never pruned for lack of use.
+  is_operator_added INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TABLE IF NOT EXISTS usage (
   server_id TEXT NOT NULL,
@@ -90,12 +92,14 @@ pub struct Store {
 impl Store {
   /// Opens (and creates) the database; `:memory:` for tests.
   pub fn open(path: &Path) -> Result<Self, StoreError> {
+    create_private(path);
     let connection = Connection::open(path)?;
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
     // WAL lets the CLI read and block servers while the gateway runs.
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "NORMAL")?;
     connection.execute_batch(SCHEMA)?;
+    add_missing_columns(&connection)?;
     Ok(Self {
       connection: Arc::new(Mutex::new(connection)),
     })
@@ -121,6 +125,49 @@ impl Store {
           params![server_id, public_key.as_slice(), now],
         )?;
         Ok(changed == 1)
+      })
+      .await
+  }
+
+  /// Marks a server as added by the operator, so it is never pruned for lack of use.
+  pub async fn mark_operator_added(&self, server_id: &str) -> Result<bool, StoreError> {
+    let server_id = server_id.to_owned();
+    self
+      .run(move |db| {
+        let changed = db.execute(
+          "UPDATE servers SET is_operator_added = 1 WHERE server_id = ?1",
+          params![server_id],
+        )?;
+        Ok(changed == 1)
+      })
+      .await
+  }
+
+  /// Deletes a server and its usage; `false` if unknown. It can register again (open mode).
+  pub async fn delete_server(&self, server_id: &str) -> Result<bool, StoreError> {
+    let server_id = server_id.to_owned();
+    self
+      .run(move |db| {
+        db.execute("DELETE FROM usage WHERE server_id = ?1", params![server_id])?;
+        let changed = db.execute("DELETE FROM servers WHERE server_id = ?1", params![server_id])?;
+        Ok(changed == 1)
+      })
+      .await
+  }
+
+  /// Deletes servers that registered before `created_before` (Unix seconds) and never pushed,
+  /// unless blocked (a block must survive re-registration) or added by the operator. Returns how
+  /// many went.
+  pub async fn prune_unused(&self, created_before: i64) -> Result<u64, StoreError> {
+    self
+      .run(move |db| {
+        let removed = db.execute(
+          "DELETE FROM servers WHERE is_blocked = 0 AND is_operator_added = 0
+             AND last_seen_at = created_at AND created_at < ?1
+             AND NOT EXISTS (SELECT 1 FROM usage u WHERE u.server_id = servers.server_id)",
+          params![created_before],
+        )?;
+        Ok(u64::try_from(removed).unwrap_or(u64::MAX))
       })
       .await
   }
@@ -269,6 +316,31 @@ impl Store {
   }
 }
 
+/// Databases created before a column existed get it (the schema has no versions yet).
+fn add_missing_columns(db: &Connection) -> Result<(), StoreError> {
+  let has_column = db
+    .prepare("SELECT 1 FROM pragma_table_info('servers') WHERE name = 'is_operator_added'")?
+    .exists([])?;
+  if !has_column {
+    db.execute_batch("ALTER TABLE servers ADD COLUMN is_operator_added INTEGER NOT NULL DEFAULT 0")?;
+  }
+  Ok(())
+}
+
+/// Creates the database file readable by the gateway's user only (it names every registered
+/// server); an existing file keeps its permissions.
+fn create_private(path: &Path) {
+  if path.as_os_str() == ":memory:" {
+    return;
+  }
+  let mut options = std::fs::OpenOptions::new();
+  options.write(true).create_new(true);
+  #[cfg(unix)]
+  std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+  // Exists already (the common case) or can't be created: SQLite reports the latter itself.
+  let _ = options.open(path);
+}
+
 fn get_server(db: &Connection, server_id: &str) -> Result<Option<ServerRecord>, StoreError> {
   Ok(
     db.query_row(
@@ -367,6 +439,55 @@ mod tests {
       BlockState::Active
     );
     assert!(!store.set_blocked("missing", None, 13).await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn only_servers_that_never_pushed_are_pruned() {
+    let store = Store::open(Path::new(":memory:")).unwrap();
+    for id in ["unused", "used", "blocked", "allowed", "recent"] {
+      store
+        .insert_server(id, KEY, if id == "recent" { 100 } else { 0 })
+        .await
+        .unwrap();
+    }
+    let counts = UsageCounts {
+      accepted: 1,
+      ..UsageCounts::default()
+    };
+    store
+      .add_usage(vec![("used".into(), counts)], 0, 5)
+      .await
+      .unwrap();
+    store.set_blocked("blocked", Some("abuse"), 1).await.unwrap();
+    store.mark_operator_added("allowed").await.unwrap();
+
+    assert_eq!(store.prune_unused(50).await.unwrap(), 1);
+    assert!(store.get_server("unused").await.unwrap().is_none());
+    for kept in ["used", "blocked", "allowed", "recent"] {
+      assert!(store.get_server(kept).await.unwrap().is_some(), "{kept}");
+    }
+    assert!(store.delete_server("used").await.unwrap());
+    assert!(!store.delete_server("used").await.unwrap());
+  }
+
+  #[tokio::test]
+  async fn a_new_database_file_is_private() {
+    let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+      .join("target")
+      .join(format!("store-test-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("gateway.db");
+    let _ = std::fs::remove_file(&path);
+    Store::open(&path).unwrap();
+    #[cfg(unix)]
+    {
+      use std::os::unix::fs::PermissionsExt as _;
+      assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+      );
+    }
+    std::fs::remove_dir_all(&directory).unwrap();
   }
 
   #[tokio::test]

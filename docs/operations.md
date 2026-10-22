@@ -69,7 +69,16 @@ teamcraft-push-gateway servers block <server-id> <reason...>
 teamcraft-push-gateway servers unblock <server-id>
 teamcraft-push-gateway servers limits <server-id> <per-second|default> <burst|default> <per-day|default>
 teamcraft-push-gateway servers allow <public-key-base64url>      # for registration.mode = "closed"
+teamcraft-push-gateway servers delete <server-id>                # it may register again (open mode)
+teamcraft-push-gateway servers prune <days>                      # servers that never pushed, older than <days>
 ```
+
+Servers that registered but never pushed are also pruned automatically after
+`database.prune_unused_after_days` (7); blocked servers and keys added with `servers allow` are kept.
+
+Behind a reverse proxy, set `server.client_ip_header` to the header it sets; the gateway uses the
+last value (the one the proxy appended). Let the proxy also enforce request header and body
+timeouts and a connection limit: the gateway itself only limits how long a request body may take.
 
 ## Monitoring and logs
 

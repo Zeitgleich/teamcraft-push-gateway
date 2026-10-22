@@ -68,6 +68,7 @@ impl Providers {
         }
         .into()
       });
+      require_tls(&base_url, "apns.base_url")?;
       let sender = ApnsSender::new(ApnsSettings {
         key_pem,
         key_id: required(&apns.maybe_key_id, "key_id")?,
@@ -93,9 +94,13 @@ impl Providers {
       fcm.maybe_service_account_path.as_deref(),
       "fcm.service_account",
     )? {
+      let account = ServiceAccount::from_json(json.expose_secret()).context("fcm.service_account")?;
+      let base_url = fcm.maybe_base_url.clone().unwrap_or_else(|| FCM_BASE_URL.into());
+      require_tls(&base_url, "fcm.base_url")?;
+      require_tls(&account.token_uri, "token_uri of fcm.service_account")?;
       let sender = FcmSender::new(FcmSettings {
-        account: ServiceAccount::from_json(json.expose_secret()).context("fcm.service_account")?,
-        base_url: fcm.maybe_base_url.clone().unwrap_or_else(|| FCM_BASE_URL.into()),
+        account,
+        base_url,
         timeout,
       })
       .context("fcm")?;
@@ -104,6 +109,20 @@ impl Providers {
     }
     Ok(providers)
   }
+}
+
+/// The publisher's credentials (the APNs provider token, the Google assertion and access token)
+/// only travel over TLS; plain `http://` only to this machine, for local fakes in tests.
+fn require_tls(url: &str, name: &str) -> anyhow::Result<()> {
+  let parsed = reqwest::Url::parse(url).with_context(|| format!("{name} is not a URL"))?;
+  let host = parsed.host_str().unwrap_or_default().trim_matches(['[', ']']);
+  let is_loopback = host.eq_ignore_ascii_case("localhost")
+    || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+  anyhow::ensure!(
+    parsed.scheme() == "https" || (parsed.scheme() == "http" && is_loopback),
+    "{name} must be an https URL (plain http only to a loopback address)"
+  );
+  Ok(())
 }
 
 /// A secret given inline or as a file; inline wins.
@@ -125,6 +144,26 @@ fn secret(
 
 #[cfg(test)]
 mod tests {
+  #[test]
+  fn credentials_need_tls_except_to_this_machine() {
+    for allowed in [
+      "https://api.push.apple.com",
+      "http://127.0.0.1:9000",
+      "http://[::1]:9000",
+      "http://localhost:1",
+    ] {
+      assert!(super::require_tls(allowed, "x").is_ok(), "{allowed}");
+    }
+    for refused in [
+      "http://api.push.apple.com",
+      "http://10.0.0.1",
+      "ftp://example.com",
+      "not a url",
+    ] {
+      assert!(super::require_tls(refused, "x").is_err(), "{refused}");
+    }
+  }
+
   use super::*;
 
   #[test]
