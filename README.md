@@ -10,7 +10,7 @@ at it. Servers with self-built, self-signed apps use their own APNs/FCM credenti
 
 | Document                                 | Content                                                 |
 |------------------------------------------|---------------------------------------------------------|
-| [docs/design.md](docs/design.md)         | Why, threat model, limits, the SQLite decision          |
+| [docs/design.md](docs/design.md)         | Why, threat model, limits, the bound-token design, the SQLite decision          |
 | [docs/api.md](docs/api.md)               | The versioned HTTP contract (`/v1`), signatures, errors |
 | [docs/operations.md](docs/operations.md) | Configuration, container, operator CLI, monitoring      |
 

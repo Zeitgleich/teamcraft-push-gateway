@@ -3,13 +3,14 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::api::{
-  ErrorBody, ErrorCode, INFO_PATH, InfoResponse, Limits, PUSH_PATH, PushKind, PushProvider, PushRequest,
-  PushResponse, REGISTER_PATH, REQUEST_ID_LEN, RegisterRequest, RegisterResponse, SERVER_ID_HEADER,
-  SIGNATURE_HEADER, TIMESTAMP_HEADER, Urgency as WireUrgency,
+  Base64Bytes, ErrorBody, ErrorCode, INFO_PATH, InfoResponse, Limits, PUSH_PATH, PushKind, PushProvider,
+  PushRequest, PushResponse, REGISTER_PATH, REQUEST_ID_LEN, REVOKE_PATH, RegisterRequest, RegisterResponse,
+  RevokeRequest, RevokeResponse, SERVER_ID_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER, TokenKeyInfo,
+  Urgency as WireUrgency,
 };
 use crate::auth::{PublicKey, SignedRequest};
 use crate::providers::{ProviderError, PushMessage, Urgency};
@@ -29,6 +30,7 @@ use crate::limits::{DAY_MS, Limited, Limiter, Outcome, ServerLimits};
 use crate::metrics::{Metrics, PushResult, Refusal};
 use crate::providers::Providers;
 use crate::store::{BlockState, ServerRecord, Store};
+use crate::tokens::{TOKEN_ALGORITHM, TokenError, TokenKeys, blob_digest};
 
 const MAX_TOKEN_CHARS: usize = 4096;
 /// How long a client may take to send its request body.
@@ -42,18 +44,82 @@ pub struct AppState {
   pub limiter: Arc<Limiter>,
   pub providers: Providers,
   pub metrics: Arc<Metrics>,
+  token_keys: Arc<RwLock<TokenKeys>>,
+  /// Digests of revoked sealed tokens with their expiry (milliseconds); persisted in the store.
+  revoked: Arc<Mutex<HashMap<[u8; 32], u64>>>,
+  /// Revocation attempts per client address.
+  revoke_limiter: Arc<Limiter>,
   servers: Arc<Mutex<HashMap<String, (ServerRecord, u64)>>>,
 }
 
 impl AppState {
-  pub fn new(config: GatewayConfig, store: Store, providers: Providers) -> Self {
+  pub fn new(config: GatewayConfig, store: Store, providers: Providers, token_keys: TokenKeys) -> Self {
     Self {
       config: Arc::new(config),
       store,
       limiter: Arc::default(),
       providers,
       metrics: Arc::default(),
+      token_keys: Arc::new(RwLock::new(token_keys)),
+      revoked: Arc::default(),
+      revoke_limiter: Arc::default(),
       servers: Arc::default(),
+    }
+  }
+
+  /// What a restart of the process looks like: the same configuration, store, providers and token
+  /// keys on disk, but empty memory (rate limits, replay cache, caches), revocations reloaded.
+  pub async fn restarted(&self) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    let token_keys = TokenKeys::load_or_create(&self.config.tokens.dir, now_millis() / 1000)?;
+    let state = Self {
+      config: self.config.clone(),
+      store: self.store.clone(),
+      limiter: Arc::default(),
+      providers: self.providers.clone(),
+      metrics: Arc::default(),
+      token_keys: Arc::new(RwLock::new(token_keys)),
+      revoked: Arc::default(),
+      revoke_limiter: Arc::default(),
+      servers: Arc::default(),
+    };
+    state.restore_revocations().await?;
+    Ok(state)
+  }
+
+  /// The public key apps seal device tokens to right now.
+  pub fn token_public_key(&self) -> [u8; 32] {
+    let keys = self.token_keys.read().unwrap_or_else(|p| p.into_inner());
+    keys.current().map_or([0; 32], |key| *key.public_key())
+  }
+
+  /// Loads the revocations that still matter from the store (at start).
+  pub async fn restore_revocations(&self) -> Result<(), crate::store::StoreError> {
+    let now_secs = i64::try_from(now_millis() / 1000).unwrap_or(i64::MAX);
+    let stored = self.store.revocations(now_secs).await?;
+    let mut revoked = lock(&self.revoked);
+    for (digest, expires_secs) in stored {
+      revoked.insert(
+        digest,
+        u64::try_from(expires_secs).unwrap_or(0).saturating_mul(1000),
+      );
+    }
+    Ok(())
+  }
+
+  /// Picks up keys that `keys rotate` wrote, and forgets expired revocations.
+  pub async fn housekeeping(&self, now_ms: u64) {
+    if let Err(error) = self
+      .token_keys
+      .write()
+      .unwrap_or_else(|p| p.into_inner())
+      .reload()
+    {
+      warn!(%error, "reloading the token keys failed");
+    }
+    lock(&self.revoked).retain(|_, expires_ms| *expires_ms > now_ms);
+    let now_secs = i64::try_from(now_ms / 1000).unwrap_or(i64::MAX);
+    if let Err(error) = self.store.prune_revocations(now_secs).await {
+      warn!(%error, "pruning revocations failed");
     }
   }
 
@@ -114,6 +180,7 @@ pub fn api_router(state: AppState) -> Router {
     .route(PUSH_PATH, post(push_handler))
     .route(REGISTER_PATH, post(register_handler))
     .route(INFO_PATH, get(info_handler))
+    .route(REVOKE_PATH, post(revoke_handler))
     .with_state(state)
 }
 
@@ -141,7 +208,8 @@ async fn push_handler(
 
   let request: PushRequest = serde_json::from_slice(&body)
     .map_err(|_| state.refuse(ApiError::invalid("the body is not a push request")))?;
-  let (message, token) = validate(&state, &request).map_err(|error| state.refuse(error))?;
+  let raw_token = resolve_token(&state, &record, &request, now_ms).map_err(|error| state.refuse(error))?;
+  let (message, token) = validate(&state, &request, &raw_token).map_err(|error| state.refuse(error))?;
   let sender = state
     .providers
     .get(&request.provider)
@@ -251,13 +319,78 @@ async fn register_handler(
   }))
 }
 
-async fn info_handler(State(state): State<AppState>) -> Json<InfoResponse> {
-  Json(InfoResponse {
+async fn info_handler(State(state): State<AppState>) -> Result<Json<InfoResponse>, ApiError> {
+  let token_key = {
+    let keys = state.token_keys.read().unwrap_or_else(|p| p.into_inner());
+    let current = keys.current().map_err(|_| ApiError::internal())?;
+    TokenKeyInfo {
+      key_id: current.id_hex(),
+      algorithm: TOKEN_ALGORITHM.into(),
+      public_key: Base64Bytes(current.public_key().to_vec()),
+    }
+  };
+  Ok(Json(InfoResponse {
     version: env!("CARGO_PKG_VERSION").into(),
     providers: state.providers.configured(),
     is_registration_open: state.config.registration.mode == RegistrationMode::Open,
     limits: state.public_limits(),
-  })
+    token_key,
+    are_bound_tokens_required: !state.config.tokens.accept_unbound,
+    max_token_lifetime_secs: state.config.tokens.max_lifetime_secs,
+  }))
+}
+
+/// Ends a sealed token. Unauthenticated: the token is the secret; whoever holds it (the app that
+/// sealed it) may revoke it. The gateway keeps only its digest, until the token would have expired.
+async fn revoke_handler(
+  State(state): State<AppState>,
+  ConnectInfo(peer): ConnectInfo<SocketAddr>,
+  headers: HeaderMap,
+  body: Body,
+) -> Result<Json<RevokeResponse>, ApiError> {
+  let now_ms = now_millis();
+  let tokens = &state.config.tokens;
+  let body = read_body(body, state.config.limits.max_body_bytes)
+    .await
+    .map_err(|error| state.refuse(error))?;
+  let request: RevokeRequest = serde_json::from_slice(&body)
+    .map_err(|_| state.refuse(ApiError::invalid("the body is not a revocation")))?;
+  let address = client_address(&state.config, &headers, peer.ip());
+  state
+    .revoke_limiter
+    .admit_registration(
+      address,
+      tokens.revocations_per_address_per_hour,
+      tokens.revocations_global_per_hour,
+      now_ms,
+    )
+    .map_err(|limited| state.limited(limited))?;
+  // Only a token this gateway sealed-to can be revoked; anything else is refused, so the table
+  // can't be filled with arbitrary blobs.
+  let bound = state
+    .token_keys
+    .read()
+    .unwrap_or_else(|p| p.into_inner())
+    .open(request.bound_token.as_slice())
+    .map_err(|_| {
+      state.refuse(ApiError::new(
+        ErrorCode::TokenInvalid,
+        "the sealed token can't be opened",
+      ))
+    })?;
+  if bound.expires_at_ms > now_ms {
+    let digest = blob_digest(request.bound_token.as_slice());
+    lock(&state.revoked).insert(digest, bound.expires_at_ms);
+    state
+      .store
+      .add_revocation(
+        digest,
+        i64::try_from(bound.expires_at_ms / 1000).unwrap_or(i64::MAX),
+      )
+      .await
+      .map_err(|_| ApiError::internal())?;
+  }
+  Ok(Json(RevokeResponse { revoked: true }))
 }
 
 async fn health_handler(State(state): State<AppState>) -> Response {
@@ -354,22 +487,91 @@ fn verify(
 /// Field checks that need no state; the wake-up becomes the message for the push service.
 /// The message to send and the token in its one canonical form (APNs: lower-case hex, which
 /// Apple treats case-insensitively; one device must not get a second per-token budget by case).
-fn validate(state: &AppState, request: &PushRequest) -> Result<(PushMessage, String), ApiError> {
+/// The device token a push is for. A sealed token is opened, and used only if it names the
+/// authenticated server, has not expired and has not been revoked; a raw token only passes while the
+/// gateway accepts unbound ones.
+fn resolve_token(
+  state: &AppState,
+  record: &ServerRecord,
+  request: &PushRequest,
+  now_ms: u64,
+) -> Result<String, ApiError> {
+  let tokens = &state.config.tokens;
+  match (&request.maybe_token, &request.maybe_bound_token) {
+    (Some(raw), None) if tokens.accept_unbound => Ok(raw.clone()),
+    (Some(_), None) => Err(ApiError::new(
+      ErrorCode::TokenUnbound,
+      "this gateway only accepts device tokens sealed by the app (bound_token)",
+    )),
+    (None, Some(blob)) => {
+      let bound = state
+        .token_keys
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .open(blob.as_slice())
+        .map_err(|error| match error {
+          TokenError::Invalid => ApiError::new(ErrorCode::TokenInvalid, "the sealed token can't be opened"),
+          TokenError::KeyStore(_) => ApiError::internal(),
+        })?;
+      if bound.server_id != record.server_id {
+        return Err(ApiError::new(
+          ErrorCode::TokenServerMismatch,
+          "the sealed token is bound to another server",
+        ));
+      }
+      if bound.provider != request.provider.as_str() {
+        return Err(ApiError::new(
+          ErrorCode::TokenInvalid,
+          "the sealed token is for another push service",
+        ));
+      }
+      if bound.expires_at_ms <= now_ms {
+        return Err(ApiError::new(
+          ErrorCode::TokenExpired,
+          "the sealed token has expired",
+        ));
+      }
+      // A token that claims to outlive the cap is not honoured: the app seals it again.
+      if bound.expires_at_ms.saturating_sub(now_ms) > tokens.max_lifetime_secs.saturating_mul(1000) {
+        return Err(ApiError::new(
+          ErrorCode::TokenInvalid,
+          "the sealed token claims a longer validity than this gateway allows",
+        ));
+      }
+      if lock(&state.revoked).contains_key(&blob_digest(blob.as_slice())) {
+        return Err(ApiError::new(
+          ErrorCode::TokenRevoked,
+          "the sealed token was revoked",
+        ));
+      }
+      Ok(bound.token)
+    },
+    _ => Err(ApiError::invalid(
+      "exactly one of token and bound_token is required",
+    )),
+  }
+}
+
+fn validate(
+  state: &AppState,
+  request: &PushRequest,
+  raw_token: &str,
+) -> Result<(PushMessage, String), ApiError> {
   let limits = &state.config.limits;
   if !matches!(request.provider, PushProvider::Apns | PushProvider::Fcm) {
     return Err(ApiError::invalid("provider must be apns or fcm"));
   }
-  if request.token.is_empty() || request.token.len() > MAX_TOKEN_CHARS {
+  if raw_token.is_empty() || raw_token.len() > MAX_TOKEN_CHARS {
     return Err(ApiError::invalid("the token has an invalid length"));
   }
   let token = match request.provider {
     PushProvider::Apns => {
-      if !request.token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+      if !raw_token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(ApiError::invalid("an APNs token is hex"));
       }
-      request.token.to_ascii_lowercase()
+      raw_token.to_ascii_lowercase()
     },
-    _ => request.token.clone(),
+    _ => raw_token.to_owned(),
   };
   if request.sealed.as_slice().is_empty() || request.sealed.as_slice().len() > limits.max_sealed_bytes {
     return Err(ApiError::new(
@@ -500,7 +702,12 @@ impl ApiError {
       ErrorCode::RateLimited | ErrorCode::QuotaExceeded | ErrorCode::TokenRateLimited => {
         StatusCode::TOO_MANY_REQUESTS
       },
-      ErrorCode::TokenGone => StatusCode::GONE,
+      ErrorCode::TokenGone
+      | ErrorCode::TokenUnbound
+      | ErrorCode::TokenExpired
+      | ErrorCode::TokenInvalid
+      | ErrorCode::TokenRevoked
+      | ErrorCode::TokenServerMismatch => StatusCode::GONE,
       ErrorCode::ProviderNotConfigured => StatusCode::NOT_IMPLEMENTED,
       ErrorCode::ProviderRejected | ErrorCode::ProviderUnavailable => StatusCode::BAD_GATEWAY,
       ErrorCode::Unknown(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -563,6 +770,11 @@ impl ApiError {
       ErrorCode::QuotaExceeded => Refusal::QuotaExceeded,
       ErrorCode::TokenRateLimited => Refusal::TokenLimited,
       ErrorCode::ProviderNotConfigured => Refusal::NotConfigured,
+      ErrorCode::TokenUnbound => Refusal::Unbound,
+      ErrorCode::TokenExpired
+      | ErrorCode::TokenInvalid
+      | ErrorCode::TokenRevoked
+      | ErrorCode::TokenServerMismatch => Refusal::BadToken,
       _ => Refusal::Malformed,
     }
   }

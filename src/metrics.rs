@@ -30,6 +30,8 @@ pub enum Refusal {
   QuotaExceeded,
   TokenLimited,
   NotConfigured,
+  Unbound,
+  BadToken,
 }
 
 const PROVIDERS: [&str; 2] = ["apns", "fcm"];
@@ -40,7 +42,7 @@ const RESULTS: [(PushResult, &str); 5] = [
   (PushResult::Unavailable, "unavailable"),
   (PushResult::Invalid, "invalid"),
 ];
-const REFUSALS: [(Refusal, &str); 9] = [
+const REFUSALS: [(Refusal, &str); 11] = [
   (Refusal::Malformed, "malformed"),
   (Refusal::Unauthorized, "unauthorized"),
   (Refusal::UnknownServer, "unknown_server"),
@@ -50,6 +52,8 @@ const REFUSALS: [(Refusal, &str); 9] = [
   (Refusal::QuotaExceeded, "quota_exceeded"),
   (Refusal::TokenLimited, "token_limited"),
   (Refusal::NotConfigured, "provider_not_configured"),
+  (Refusal::Unbound, "unbound_token"),
+  (Refusal::BadToken, "bad_token"),
 ];
 
 #[derive(Default)]

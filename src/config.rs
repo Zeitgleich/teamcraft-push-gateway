@@ -19,6 +19,7 @@ pub struct GatewayConfig {
   pub database: DatabaseConfig,
   pub registration: RegistrationConfig,
   pub limits: LimitsConfig,
+  pub tokens: TokensConfig,
   pub apns: ApnsConfig,
   pub fcm: FcmConfig,
 }
@@ -94,6 +95,35 @@ pub struct LimitsConfig {
   pub max_ttl_secs: u32,
   /// How far a request's timestamp may differ from the gateway's clock.
   pub timestamp_window_secs: u64,
+}
+
+/// Bound device tokens (docs/design.md §4).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TokensConfig {
+  /// The directory of the token keys (created, owner-only, with a first key on start). Back it up
+  /// with the database: without the keys, every sealed token stops opening and apps seal again.
+  pub dir: PathBuf,
+  /// The longest validity a sealed token may claim; longer ones are refused.
+  pub max_lifetime_secs: u64,
+  /// Also accept raw device tokens (a transition for servers and apps that don't seal yet). Off by
+  /// default: a raw token can be used by any server that knows it.
+  pub accept_unbound: bool,
+  /// Revocations per client address and hour, and in total.
+  pub revocations_per_address_per_hour: u32,
+  pub revocations_global_per_hour: u32,
+}
+
+impl Default for TokensConfig {
+  fn default() -> Self {
+    Self {
+      dir: "token-keys".into(),
+      max_lifetime_secs: 90 * 24 * 3600,
+      accept_unbound: false,
+      revocations_per_address_per_hour: 60,
+      revocations_global_per_hour: 6000,
+    }
+  }
 }
 
 #[derive(Debug, Deserialize)]

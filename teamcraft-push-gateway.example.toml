@@ -32,6 +32,15 @@ per_address_per_hour = 10
 global_per_hour = 600
 max_servers = 100000
 
+# Bound device tokens (docs/design.md §4): apps seal their APNs/FCM token to a key of this gateway,
+# bound to one server. Back the directory up with the database.
+[tokens]
+dir = "token-keys"
+max_lifetime_secs = 7776000          # 90 days
+accept_unbound = false               # true: also accept raw device tokens (transition only)
+revocations_per_address_per_hour = 60
+revocations_global_per_hour = 6000
+
 # Defaults for every server; `servers limits <id> ...` overrides them per server.
 [limits]
 pushes_per_second = 50

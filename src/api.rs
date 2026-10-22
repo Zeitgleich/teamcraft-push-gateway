@@ -21,6 +21,7 @@ pub const SIGNATURE_HEADER: &str = "x-teamcraft-signature";
 pub const PUSH_PATH: &str = "/v1/push";
 pub const REGISTER_PATH: &str = "/v1/servers";
 pub const INFO_PATH: &str = "/v1/info";
+pub const REVOKE_PATH: &str = "/v1/tokens/revoke";
 
 /// Length of [`PushRequest::request_id`].
 pub const REQUEST_ID_LEN: usize = 16;
@@ -182,8 +183,15 @@ pub struct PushRequest {
   pub urgency: Urgency,
   /// How long the push service may hold the wake-up for an offline device.
   pub ttl_secs: u32,
-  /// The APNs device token (hex) or FCM registration token.
-  pub token: String,
+  /// The raw APNs device token (hex) or FCM registration token. Only accepted by gateways that
+  /// allow unbound tokens (a transition setting, off by default); exactly one of `token` and
+  /// `bound_token` is set.
+  #[serde(rename = "token", default, skip_serializing_if = "Option::is_none")]
+  pub maybe_token: Option<String>,
+  /// The token sealed by the app to the gateway's token key, bound to the one server that may push
+  /// to it (docs/api.md §6).
+  #[serde(rename = "bound_token", default, skip_serializing_if = "Option::is_none")]
+  pub maybe_bound_token: Option<Base64Bytes>,
   /// The wake-up sealed to the device's push key; opaque to the gateway.
   pub sealed: Base64Bytes,
 }
@@ -214,6 +222,34 @@ pub struct InfoResponse {
   /// Whether unknown servers may register themselves.
   pub is_registration_open: bool,
   pub limits: Limits,
+  /// The key apps seal their device tokens to.
+  pub token_key: TokenKeyInfo,
+  /// `false` only while the gateway still accepts raw device tokens (transition).
+  pub are_bound_tokens_required: bool,
+  /// The longest validity a sealed token may claim.
+  pub max_token_lifetime_secs: u64,
+}
+
+/// The current token key (docs/api.md §6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenKeyInfo {
+  /// 8 bytes as 16 hex characters: the first bytes of SHA-256 of the public key.
+  pub key_id: String,
+  /// `hpke-x25519-hkdf-sha256-chacha20poly1305`.
+  pub algorithm: String,
+  /// The X25519 public key (32 bytes).
+  pub public_key: Base64Bytes,
+}
+
+/// `POST /v1/tokens/revoke`, unauthenticated: whoever holds a sealed token (the app) can end it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevokeRequest {
+  pub bound_token: Base64Bytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevokeResponse {
+  pub revoked: bool,
 }
 
 wire_enum! {
@@ -235,6 +271,16 @@ wire_enum! {
     TokenRateLimited => "token_rate_limited",
     /// APNs or FCM says the token is dead: the server forgets the registration.
     TokenGone => "token_gone",
+    /// A raw device token was sent and this gateway only takes sealed ones.
+    TokenUnbound => "token_unbound",
+    /// The sealed token's expiry has passed: the app has to seal it again.
+    TokenExpired => "token_expired",
+    /// The sealed token can't be opened (malformed, or sealed to a key this gateway no longer has).
+    TokenInvalid => "token_invalid",
+    /// The app ended this sealed token (it left the server).
+    TokenRevoked => "token_revoked",
+    /// The sealed token names another server.
+    TokenServerMismatch => "token_server_mismatch",
     ProviderNotConfigured => "provider_not_configured",
     /// The gateway's credentials were rejected: the gateway operator's problem, not the token's.
     ProviderRejected => "provider_rejected",

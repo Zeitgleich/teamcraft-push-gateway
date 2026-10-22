@@ -23,6 +23,7 @@ use teamcraft_push_gateway::providers::{
   ApnsSender, ApnsSettings, FcmSender, FcmSettings, Providers, ServiceAccount, TokenSender,
 };
 use teamcraft_push_gateway::store::Store;
+use teamcraft_push_gateway::tokens::{BoundToken, TokenKeys, seal};
 
 // Fake APNs and FCM (HTTP/2 without TLS, recording requests).
 pub mod push_fakes;
@@ -69,6 +70,7 @@ pub struct Client {
 pub fn default_config() -> GatewayConfig {
   let mut config = GatewayConfig::default();
   config.database.path = ":memory:".into();
+  config.tokens.dir = unique_dir();
   // Block and limit changes apply at once.
   config.database.server_cache_secs = 0;
   config
@@ -117,7 +119,8 @@ impl Gateway {
     fcm: Fake,
   ) -> Self {
     let store = Store::open(&config.database.path).unwrap();
-    let state = AppState::new(config, store, providers);
+    let token_keys = TokenKeys::load_or_create(&config.tokens.dir, now_ms() / 1000).unwrap();
+    let state = AppState::new(config, store, providers, token_keys);
     let url = serve(api_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>()).await;
     let internal_url =
       serve(internal_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>()).await;
@@ -129,6 +132,31 @@ impl Gateway {
       fcm,
       http: reqwest::Client::new(),
     }
+  }
+
+  /// The same gateway after a restart of its process: a new listener on the same store, keys and
+  /// fake push services.
+  pub async fn restart(&self) -> Self {
+    let state = self.state.restarted().await.unwrap();
+    let url = serve(api_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>()).await;
+    let internal_url =
+      serve(internal_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>()).await;
+    Self {
+      url,
+      internal_url,
+      state,
+      apns: self.apns.clone(),
+      fcm: self.fcm.clone(),
+      http: reqwest::Client::new(),
+    }
+  }
+
+  /// `keys rotate` from the CLI, picked up by the running gateway.
+  pub async fn rotate_token_key(&self) {
+    let mut keys = TokenKeys::load_or_create(&self.state.config.tokens.dir, now_ms() / 1000).unwrap();
+    // A later second, so the new key is the newest.
+    keys.rotate(now_ms() / 1000 + 1).unwrap();
+    self.state.housekeeping(now_ms()).await;
   }
 
   /// A fresh server key, registered.
@@ -152,8 +180,26 @@ impl Gateway {
       .await
   }
 
-  /// A signed push request for APNs.
+  /// A signed push request. A raw `token` in the body is sealed for this client first, as the app
+  /// does; the other fields go as they are.
   pub async fn push(&self, client: &Client, body: &Value) -> reqwest::Response {
+    let mut body = body.clone();
+    if let Some(token) = body.get("token").and_then(Value::as_str).map(str::to_owned) {
+      let provider = body["provider"].as_str().unwrap_or("apns").to_owned();
+      body.as_object_mut().unwrap().remove("token");
+      body["bound_token"] = json!(STANDARD.encode(self.seal_for(client, &provider, &token, 3_600_000)));
+    }
+    self.push_raw(client, &body).await
+  }
+
+  /// A sealed token for `client`, valid for `lifetime_ms` from now.
+  pub fn seal_for(&self, client: &Client, provider: &str, token: &str, lifetime_ms: u64) -> Vec<u8> {
+    let bound = BoundToken::new(provider, &client.server_id, now_ms() + lifetime_ms, token);
+    seal(&self.state.token_public_key(), &bound).unwrap()
+  }
+
+  /// A signed push request exactly as given.
+  pub async fn push_raw(&self, client: &Client, body: &Value) -> reqwest::Response {
     self
       .post_signed(
         GATEWAY_PUSH_PATH,
@@ -246,4 +292,14 @@ async fn serve(
     axum::serve(listener, service).await.unwrap();
   });
   format!("http://{address}")
+}
+
+fn unique_dir() -> std::path::PathBuf {
+  use std::sync::atomic::{AtomicU32, Ordering};
+  static NEXT: AtomicU32 = AtomicU32::new(0);
+  std::env::temp_dir().join(format!(
+    "tcgw-test-{}-{}",
+    std::process::id(),
+    NEXT.fetch_add(1, Ordering::Relaxed)
+  ))
 }

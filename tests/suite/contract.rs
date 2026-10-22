@@ -8,11 +8,14 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use teamcraft_push_gateway::api::{
   ErrorBody, ErrorCode, InfoResponse, PushKind, PushProvider, PushRequest, PushResponse, RegisterRequest,
-  RegisterResponse, Urgency,
+  RegisterResponse, RevokeRequest, RevokeResponse, Urgency,
 };
 use teamcraft_push_gateway::auth::{PublicKey, SignedRequest};
+use teamcraft_push_gateway::tokens::{TokenKey, TokenKeys};
 
 const PUSH_REQUEST: &str = include_str!("../fixtures/push_request.json");
+const PUSH_REQUEST_BOUND: &str = include_str!("../fixtures/push_request_bound.json");
+const BOUND_TOKEN: &str = include_str!("../fixtures/bound_token.json");
 const SIGNATURE: &str = include_str!("../fixtures/signature.json");
 
 fn round_trip<T: Serialize + DeserializeOwned>(fixture: &str) -> T {
@@ -109,4 +112,41 @@ fn hex(text: &str) -> Vec<u8> {
     .step_by(2)
     .map(|index| u8::from_str_radix(&text[index..index + 2], 16).unwrap())
     .collect()
+}
+
+#[test]
+fn the_bound_fixtures_parse_and_the_known_blob_opens() {
+  let request: PushRequest = round_trip(PUSH_REQUEST_BOUND);
+  assert!(request.maybe_token.is_none());
+  let _: RevokeRequest = round_trip(include_str!("../fixtures/revoke_request.json"));
+  let _: RevokeResponse = round_trip(include_str!("../fixtures/revoke_response.json"));
+  let expired: ErrorBody = round_trip(include_str!("../fixtures/error_token_expired.json"));
+  assert_eq!(expired.error_code, ErrorCode::TokenExpired);
+
+  // The blob of the known answer opens with the key made from the fixture's seed.
+  let fixture: Value = serde_json::from_str(BOUND_TOKEN).unwrap();
+  assert_eq!(request.maybe_bound_token.unwrap().as_slice(), blob(&fixture));
+  let seed = hex(fixture["seed_hex"].as_str().unwrap());
+  let key = TokenKey::from_seed(seed.try_into().unwrap(), 1).unwrap();
+  assert_eq!(key.id_hex(), fixture["key_id"].as_str().unwrap());
+  let dir = std::env::temp_dir().join(format!("tcgw-kat-{}", std::process::id()));
+  std::fs::create_dir_all(&dir).unwrap();
+  std::fs::write(
+    dir.join(format!("1-{}.key", key.id_hex())),
+    fixture["seed_hex"].as_str().unwrap(),
+  )
+  .unwrap();
+  let opened = TokenKeys::load_or_create(&dir, 1)
+    .unwrap()
+    .open(&blob(&fixture))
+    .unwrap();
+  std::fs::remove_dir_all(&dir).unwrap();
+  assert_eq!(serde_json::to_value(&opened).unwrap(), fixture["plaintext"]);
+}
+
+fn blob(fixture: &Value) -> Vec<u8> {
+  use base64::Engine as _;
+  base64::engine::general_purpose::STANDARD
+    .decode(fixture["blob"].as_str().unwrap())
+    .unwrap()
 }
