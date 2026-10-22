@@ -1,7 +1,8 @@
 # cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/ (same policy as TeamCraft).
 
 [graph]
-all-features = true
+# The gateway has no features of its own; optional features of dependencies (hpke-rs: libcrux) are not built.
+all-features = false
 
 [advisories]
 # Every ignored advisory needs a reason and a link.
