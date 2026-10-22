@@ -125,7 +125,10 @@ fn the_bound_fixtures_parse_and_the_known_blob_opens() {
 
   // The blob of the known answer opens with the key made from the fixture's seed.
   let fixture: Value = serde_json::from_str(BOUND_TOKEN).unwrap();
-  assert_eq!(request.maybe_bound_token.unwrap().as_slice(), blob(&fixture));
+  assert_eq!(
+    request.maybe_bound_token.unwrap().as_slice(),
+    blob(&fixture, "blob")
+  );
   let seed = hex(fixture["seed_hex"].as_str().unwrap());
   let key = TokenKey::from_seed(seed.try_into().unwrap(), 1).unwrap();
   assert_eq!(key.id_hex(), fixture["key_id"].as_str().unwrap());
@@ -144,9 +147,9 @@ fn the_bound_fixtures_parse_and_the_known_blob_opens() {
   assert_eq!(serde_json::to_value(&opened).unwrap(), fixture["plaintext"]);
 }
 
-fn blob(fixture: &Value) -> Vec<u8> {
+fn blob(fixture: &Value, name: &str) -> Vec<u8> {
   use base64::Engine as _;
   base64::engine::general_purpose::STANDARD
-    .decode(fixture["blob"].as_str().unwrap())
+    .decode(fixture[name].as_str().unwrap())
     .unwrap()
 }

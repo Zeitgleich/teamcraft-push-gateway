@@ -1,9 +1,10 @@
 {
-  "comment": "Known answer for a bound device token (docs/api.md \u00a76): a blob sealed to the key made from this seed; opening it must give the plaintext. Identical in teamcraft and teamcraft-push-gateway.",
+  "comment": "Known answer for a bound device token (docs/api.md \u00a76): a blob sealed to the key made from this seed; opening it must give the plaintext. Identical in teamcraft and teamcraft-push-gateway. \"blob\" was sealed by the gateway code, \"blob_teamcraft\" by the TeamCraft code: both must open.",
   "seed_hex": "0909090909090909090909090909090909090909090909090909090909090909",
   "key_id": "d943783749f67cb6",
   "public_key": "3okjpnXQIYDN19AJe6QEueHikw1WZculjRdlAGNheTs=",
   "blob": "2UN4N0n2fLYt/nDA4OO8auRHbCqF83MeWDZyF2i47Tt/C2uresvOEY0XfIVPqZ5ptHktY48G1jrnV3MEt+NKXQNqzktsccDb3lOKStgkGNuUEr0VuDnhHlat0B9VquR/I4qHGUvc5dRJIFnuO/A2Ff+Gxw1zV1qFOJ7pgyRNBFBAjdSs35HiUUDakftWE46zU38Yw97ZFfQvcmCEpH3K7m/GbABlVGetN1K1LvAzdOx/ek6Z6TDumWikeq5CYPz14Nj91t6xz705xiaJpf6xGPD7SgTDnubx2QyaiM/WcK/MpCwAKOMgLgw=",
+  "blob_teamcraft": "",
   "plaintext": {
     "v": 1,
     "provider": "apns",
