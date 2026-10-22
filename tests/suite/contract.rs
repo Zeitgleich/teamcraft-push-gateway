@@ -139,12 +139,17 @@ fn the_bound_fixtures_parse_and_the_known_blob_opens() {
     fixture["seed_hex"].as_str().unwrap(),
   )
   .unwrap();
-  let opened = TokenKeys::load_or_create(&dir, 1)
-    .unwrap()
-    .open(&blob(&fixture))
-    .unwrap();
+  let keys = TokenKeys::load_or_create(&dir, 1).unwrap();
   std::fs::remove_dir_all(&dir).unwrap();
-  assert_eq!(serde_json::to_value(&opened).unwrap(), fixture["plaintext"]);
+  // The blob sealed by this code and the one sealed by the TeamCraft code both open.
+  for name in ["blob", "blob_teamcraft"] {
+    let opened = keys.open(&blob(&fixture, name)).unwrap();
+    assert_eq!(
+      serde_json::to_value(&opened).unwrap(),
+      fixture["plaintext"],
+      "{name}"
+    );
+  }
 }
 
 fn blob(fixture: &Value, name: &str) -> Vec<u8> {
