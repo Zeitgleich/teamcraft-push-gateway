@@ -6,7 +6,12 @@ all-features = false
 
 [advisories]
 # Every ignored advisory needs a reason and a link.
-ignore = []
+ignore = [
+  # Unmaintained proc-macro error helpers, compile time only: hax-lib-macros, pulled in by libcrux-sha3,
+  # which hpke-rs always depends on. No runtime code, no known vulnerability. Same entry as TeamCraft's.
+  # https://rustsec.org/advisories/RUSTSEC-2026-0173
+  { id = "RUSTSEC-2026-0173", reason = "unmaintained compile-time proc macro via hax-lib (hpke-rs)" },
+]
 
 [licenses]
 confidence-threshold = 0.93
