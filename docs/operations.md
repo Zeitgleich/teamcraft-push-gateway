@@ -4,6 +4,36 @@ Only the publisher of store apps (or whoever builds their own apps for a group o
 gateway. It is one binary or container image with a small SQLite file; run it on **its own host**,
 separate from every chat server, behind a TLS-terminating reverse proxy.
 
+## The publisher's deployment
+
+The publisher of the official TeamCraft store apps runs its gateway at **https://push-gw.zeitgleich.de**
+(a separate host, TLS terminated by a reverse proxy in front of `server.bind`, `registration.mode = "open"`,
+the publisher's APNs key and Firebase service account as container secrets). TeamCraft servers point
+`[push.gateway] url` at it; the TeamCraft deployment playbook does so by default. The binary and the image
+contain no host name. An example for the publisher's configuration:
+
+```toml
+[server]
+bind = "127.0.0.1:8090"          # the reverse proxy for push-gw.zeitgleich.de forwards here
+health_bind = "127.0.0.1:8091"
+client_ip_header = "x-forwarded-for"
+
+[registration]
+mode = "open"
+
+[apns]
+key_path = "/run/secrets/apns_key.p8"
+key_id = "ABC123DEFG"
+team_id = "DEF456GHIJ"
+bundle_id = "com.example.teamcraft"    # the store app's bundle ID
+
+[fcm]
+service_account_path = "/run/secrets/fcm_service_account.json"
+```
+
+The TeamCraft deployment repository has an optional `push_gateway` role that installs exactly this
+(rootless Podman, Quadlet, its own Caddy) on a host of its own.
+
 ## Configuration
 
 A TOML file (`--config <file>` or `TEAMCRAFT_PUSH_GATEWAY_CONFIG`) with environment overrides
