@@ -47,8 +47,6 @@ pub struct AppState {
   pub providers: Providers,
   pub metrics: Arc<Metrics>,
   token_keys: Arc<RwLock<TokenKeys>>,
-  /// Digests of revoked sealed tokens with their expiry (milliseconds); persisted in the store.
-  revoked: Arc<Mutex<HashMap<[u8; 32], u64>>>,
   /// Revocation attempts per client address.
   revoke_limiter: Arc<Limiter>,
   servers: Arc<Mutex<HashMap<String, (ServerRecord, u64)>>>,
@@ -63,14 +61,13 @@ impl AppState {
       providers,
       metrics: Arc::default(),
       token_keys: Arc::new(RwLock::new(token_keys)),
-      revoked: Arc::default(),
       revoke_limiter: Arc::default(),
       servers: Arc::default(),
     }
   }
 
   /// What a restart of the process looks like: the same configuration, store, providers and token
-  /// keys on disk, but empty memory (rate limits, replay cache, caches), revocations reloaded.
+  /// keys on disk, but empty memory (rate limits, replay cache, caches).
   pub async fn restarted(&self) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
     let token_keys = TokenKeys::load_or_create(&self.config.tokens.dir, now_millis() / 1000)?;
     let state = Self {
@@ -80,7 +77,6 @@ impl AppState {
       providers: self.providers.clone(),
       metrics: Arc::default(),
       token_keys: Arc::new(RwLock::new(token_keys)),
-      revoked: Arc::default(),
       revoke_limiter: Arc::default(),
       servers: Arc::default(),
     };
@@ -94,18 +90,11 @@ impl AppState {
     keys.current().map_or([0; 32], |key| *key.public_key())
   }
 
-  /// Loads the revocations that still matter from the store (at start).
+  /// Drops revocations that no longer matter (at start; they are looked up in the store, not
+  /// held in memory).
   pub async fn restore_revocations(&self) -> Result<(), crate::store::StoreError> {
     let now_secs = i64::try_from(now_millis() / 1000).unwrap_or(i64::MAX);
-    let stored = self.store.revocations(now_secs).await?;
-    let mut revoked = lock(&self.revoked);
-    for (digest, expires_secs) in stored {
-      revoked.insert(
-        digest,
-        u64::try_from(expires_secs).unwrap_or(0).saturating_mul(1000),
-      );
-    }
-    Ok(())
+    self.store.prune_revocations(now_secs).await
   }
 
   /// Picks up keys that `keys rotate` wrote, and forgets expired revocations.
@@ -118,7 +107,6 @@ impl AppState {
     {
       warn!(%error, "reloading the token keys failed");
     }
-    lock(&self.revoked).retain(|_, expires_ms| *expires_ms > now_ms);
     let now_secs = i64::try_from(now_ms / 1000).unwrap_or(i64::MAX);
     if let Err(error) = self.store.prune_revocations(now_secs).await {
       warn!(%error, "pruning revocations failed");
@@ -210,7 +198,9 @@ async fn push_handler(
 
   let request: PushRequest = serde_json::from_slice(&body)
     .map_err(|_| state.refuse(ApiError::invalid("the body is not a push request")))?;
-  let raw_token = resolve_token(&state, &record, &request, now_ms).map_err(|error| state.refuse(error))?;
+  let raw_token = resolve_token(&state, &record, &request, now_ms)
+    .await
+    .map_err(|error| state.refuse(error))?;
   let (message, token) = validate(&state, &request, &raw_token).map_err(|error| state.refuse(error))?;
   let sender = state
     .providers
@@ -374,8 +364,9 @@ async fn revoke_handler(
       now_ms,
     )
     .map_err(|limited| state.limited(limited))?;
-  // Only a token this gateway sealed-to can be revoked; anything else is refused, so the table
-  // can't be filled with arbitrary blobs.
+  // Only a token this gateway's key opens can be revoked. That alone doesn't keep the table small
+  // (the key is public, anyone can seal), so a revocation is also kept no longer than the longest
+  // lifetime the gateway honours, and lives in the store, not in memory.
   let bound = state
     .token_keys
     .read()
@@ -387,14 +378,23 @@ async fn revoke_handler(
         "the sealed token can't be opened",
       ))
     })?;
+  let max_lifetime_ms = tokens.max_lifetime_secs.saturating_mul(1000);
+  if bound.expires_at_ms.saturating_sub(now_ms) > max_lifetime_ms {
+    // No app seals this far ahead; such a token is refused at push time until it is in range,
+    // and remembering it now would keep it around for that long.
+    return Err(state.refuse(ApiError::new(
+      ErrorCode::TokenInvalid,
+      "the sealed token claims a longer validity than this gateway allows",
+    )));
+  }
   if bound.expires_at_ms > now_ms {
     let digest = blob_digest(request.bound_token.as_slice());
-    lock(&state.revoked).insert(digest, bound.expires_at_ms);
     state
       .store
       .add_revocation(
         digest,
-        i64::try_from(bound.expires_at_ms / 1000).unwrap_or(i64::MAX),
+        // Rounded up: a revocation must not end before the token does.
+        i64::try_from(bound.expires_at_ms.div_ceil(1000)).unwrap_or(i64::MAX),
       )
       .await
       .map_err(|_| ApiError::internal())?;
@@ -494,12 +494,10 @@ fn verify(
 }
 
 /// Field checks that need no state; the wake-up becomes the message for the push service.
-/// The message to send and the token in its one canonical form (APNs: lower-case hex, which
-/// Apple treats case-insensitively; one device must not get a second per-token budget by case).
 /// The device token a push is for. A sealed token is opened, and used only if it names the
 /// authenticated server, has not expired and has not been revoked; a raw token only passes while the
 /// gateway accepts unbound ones.
-fn resolve_token(
+async fn resolve_token(
   state: &AppState,
   record: &ServerRecord,
   request: &PushRequest,
@@ -547,7 +545,13 @@ fn resolve_token(
           "the sealed token claims a longer validity than this gateway allows",
         ));
       }
-      if lock(&state.revoked).contains_key(&blob_digest(blob.as_slice())) {
+      let now_secs = i64::try_from(now_ms / 1000).unwrap_or(i64::MAX);
+      let is_revoked = state
+        .store
+        .is_revoked(blob_digest(blob.as_slice()), now_secs)
+        .await
+        .map_err(|_| ApiError::internal())?;
+      if is_revoked {
         return Err(ApiError::new(
           ErrorCode::TokenRevoked,
           "the sealed token was revoked",
@@ -561,6 +565,8 @@ fn resolve_token(
   }
 }
 
+/// The message to send and the token in its one canonical form (APNs: lower-case hex, which
+/// Apple treats case-insensitively; one device must not get a second per-token budget by case).
 fn validate(
   state: &AppState,
   request: &PushRequest,

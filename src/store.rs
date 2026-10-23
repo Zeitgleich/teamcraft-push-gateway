@@ -310,6 +310,20 @@ impl Store {
       .await
   }
 
+  /// Whether a sealed token (by its digest) is revoked and its revocation still matters at `now`
+  /// (seconds). Looked up on every push of a sealed token; revocations are not held in memory, so
+  /// their number can't exhaust it.
+  pub async fn is_revoked(&self, digest: [u8; 32], now: i64) -> Result<bool, StoreError> {
+    self
+      .run(move |db| {
+        Ok(
+          db.prepare_cached("SELECT 1 FROM revoked_tokens WHERE digest = ?1 AND expires_at > ?2")?
+            .exists(params![digest.as_slice(), now])?,
+        )
+      })
+      .await
+  }
+
   /// The revocations that still matter at `now` (seconds).
   pub async fn revocations(&self, now: i64) -> Result<Vec<([u8; 32], i64)>, StoreError> {
     self

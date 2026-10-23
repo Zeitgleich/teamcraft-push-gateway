@@ -295,7 +295,7 @@ pub fn hex(bytes: &[u8]) -> String {
 }
 
 pub fn unhex(text: &str) -> Option<Vec<u8>> {
-  if !text.len() % 2 == 0 || !text.is_ascii() {
+  if text.len() % 2 != 0 || !text.is_ascii() {
     return None;
   }
   (0..text.len())
@@ -316,13 +316,25 @@ fn create_private_dir(dir: &Path) -> Result<(), TokenError> {
   builder.create(dir).map_err(store_error)
 }
 
+/// Writes a new owner-only file in one step: a crash leaves either no file or the whole one (a
+/// half-written key would keep the gateway from starting). Never replaces an existing file.
 fn write_private(path: &Path, content: &[u8]) -> std::io::Result<()> {
   use std::io::Write as _;
+  if path.exists() {
+    return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+  }
+  let temporary = path.with_extension("partial");
+  // A leftover of an earlier crash.
+  let _ = fs::remove_file(&temporary);
   let mut options = fs::OpenOptions::new();
   options.write(true).create_new(true);
   #[cfg(unix)]
   std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-  options.open(path)?.write_all(content)
+  let mut file = options.open(&temporary)?;
+  file.write_all(content)?;
+  file.sync_all()?;
+  drop(file);
+  fs::rename(&temporary, path)
 }
 
 #[cfg(test)]
