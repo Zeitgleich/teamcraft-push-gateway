@@ -44,6 +44,7 @@ fn the_other_fixtures_parse_and_serialize_back() {
   let response: RegisterResponse = round_trip(include_str!("../fixtures/register_response.json"));
   assert_eq!(response.limits.burst, 200);
   let info: InfoResponse = round_trip(include_str!("../fixtures/info_response.json"));
+  assert!(info.kinds.contains(&PushKind::Dismiss) && info.kinds.contains(&PushKind::Test));
   assert_eq!(info.providers, [PushProvider::Apns, PushProvider::Fcm]);
   let limited: ErrorBody = round_trip(include_str!("../fixtures/error_rate_limited.json"));
   assert_eq!(limited.error_code, ErrorCode::RateLimited);
@@ -118,6 +119,9 @@ fn hex(text: &str) -> Vec<u8> {
 fn the_bound_fixtures_parse_and_the_known_blob_opens() {
   let request: PushRequest = round_trip(PUSH_REQUEST_BOUND);
   assert!(request.maybe_token.is_none());
+  let dismiss: PushRequest = round_trip(include_str!("../fixtures/push_request_dismiss.json"));
+  assert_eq!(dismiss.kind, PushKind::Dismiss);
+  assert_eq!(dismiss.maybe_collapse_id.as_deref(), Some("k3Yh7Qm9"));
   let _: RevokeRequest = round_trip(include_str!("../fixtures/revoke_request.json"));
   let _: RevokeResponse = round_trip(include_str!("../fixtures/revoke_response.json"));
   let expired: ErrorBody = round_trip(include_str!("../fixtures/error_token_expired.json"));

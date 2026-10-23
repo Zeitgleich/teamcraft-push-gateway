@@ -82,6 +82,20 @@ struct AlertBody<'a> {
   body: &'a str,
 }
 
+/// A silent push that wakes the app to withdraw a notification: no alert, no extension.
+#[derive(Serialize)]
+struct BackgroundPayload<'a> {
+  aps: BackgroundAps,
+  #[serde(rename = "w")]
+  sealed: &'a str,
+}
+
+#[derive(Serialize)]
+struct BackgroundAps {
+  #[serde(rename = "content-available")]
+  content_available: u8,
+}
+
 #[derive(Serialize)]
 struct VoipPayload<'a> {
   #[serde(rename = "w")]
@@ -168,7 +182,20 @@ impl TokenSender for ApnsSender {
       let now = jsonwebtoken::get_current_timestamp();
       let is_call = message.kind == PushKind::Call;
       let sealed = URL_SAFE_NO_PAD.encode(&message.sealed);
-      let (push_type, topic, priority, expiration, body) = if is_call {
+      let is_dismiss = message.kind == PushKind::Dismiss;
+      let (push_type, topic, priority, expiration, body) = if is_dismiss {
+        (
+          "background",
+          self.bundle_id.clone(),
+          // Apple requires priority 5 for background pushes.
+          "5",
+          now.saturating_add(message.ttl.as_secs()).to_string(),
+          serde_json::to_vec(&BackgroundPayload {
+            aps: BackgroundAps { content_available: 1 },
+            sealed: &sealed,
+          }),
+        )
+      } else if is_call {
         (
           "voip",
           format!("{}.voip", self.bundle_id),
@@ -199,7 +226,7 @@ impl TokenSender for ApnsSender {
       };
       let body = body.map_err(|_| ProviderError::Invalid("encoding the APNs payload failed".into()))?;
 
-      let response = self
+      let mut request = self
         .http
         .post(format!("{}/3/device/{}", self.base_url, token))
         .header("authorization", authorization_header(&self.provider_token(now)?)?)
@@ -207,7 +234,11 @@ impl TokenSender for ApnsSender {
         .header("apns-push-type", push_type)
         .header("apns-priority", priority)
         .header("apns-expiration", expiration)
-        .header("content-type", "application/json")
+        .header("content-type", "application/json");
+      if let Some(collapse_id) = &message.maybe_collapse_id {
+        request = request.header("apns-collapse-id", collapse_id);
+      }
+      let response = request
         .body(body)
         .send()
         .await

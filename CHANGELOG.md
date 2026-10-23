@@ -18,6 +18,8 @@ First release, for TeamCraft 1.0.
 - Per-server rate, burst and daily quota, per-token limit (stricter for calls), a budget per push
   service shared by all servers, registration limits (IPv6 per /48), block list, pruning of servers
   that never push, and an operator CLI (`servers list|block|unblock|limits|allow|delete|prune`).
+- Wake-up kinds `dismiss` (silent push to withdraw a notification read elsewhere) and `test`, listed in
+  `/v1/info` (`kinds`), and an optional `collapse_id` (APNs `apns-collapse-id`, FCM `collapse_key`).
 - **Bound device tokens**: apps seal their APNs/FCM token to a gateway key (HPKE), bound to one server and
   an expiry; servers send the sealed blob (`bound_token`) and the gateway refuses it for any other
   server, after expiry, or after revocation (`POST /v1/tokens/revoke`). Key management with

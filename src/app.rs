@@ -33,6 +33,8 @@ use crate::store::{BlockState, ServerRecord, Store};
 use crate::tokens::{TOKEN_ALGORITHM, TokenError, TokenKeys, blob_digest};
 
 const MAX_TOKEN_CHARS: usize = 4096;
+/// APNs allows 64 bytes in `apns-collapse-id`; FCM's collapse key is shorter-lived but takes the same.
+const MAX_COLLAPSE_ID_CHARS: usize = 64;
 /// How long a client may take to send its request body.
 const BODY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -199,7 +201,8 @@ async fn push_handler(
   let raw_token = resolve_token(&state, &record, &request, now_ms)
     .await
     .map_err(|error| state.refuse(error))?;
-  let (message, token) = validate(&state, &request, &raw_token).map_err(|error| state.refuse(error))?;
+  let (message, token) =
+    validate(&state, &request, &raw_token, &record.server_id).map_err(|error| state.refuse(error))?;
   let sender = state
     .providers
     .get(&request.provider)
@@ -327,6 +330,13 @@ async fn info_handler(State(state): State<AppState>) -> Result<Json<InfoResponse
     token_key,
     are_bound_tokens_required: !state.config.tokens.accept_unbound,
     max_token_lifetime_secs: state.config.tokens.max_lifetime_secs,
+    kinds: vec![
+      PushKind::Message,
+      PushKind::Mention,
+      PushKind::Call,
+      PushKind::Dismiss,
+      PushKind::Test,
+    ],
   }))
 }
 
@@ -558,10 +568,24 @@ async fn resolve_token(
 
 /// The message to send and the token in its one canonical form (APNs: lower-case hex, which
 /// Apple treats case-insensitively; one device must not get a second per-token budget by case).
+/// The collapse ID that goes to Apple and Google: a hash of the server's ID and its own collapse
+/// ID. One app (and one token) serves every server, so a server must not be able to replace or
+/// withdraw another server's notification by sending its collapse ID, and the push services see
+/// nothing a server might have put in plain text. 43 characters, under APNs' 64.
+fn scoped_collapse_id(server_id: &str, collapse_id: &str) -> String {
+  use sha2::{Digest as _, Sha256};
+  let mut hasher = Sha256::new();
+  hasher.update(server_id.as_bytes());
+  hasher.update([0]);
+  hasher.update(collapse_id.as_bytes());
+  URL_SAFE_NO_PAD.encode(hasher.finalize())
+}
+
 fn validate(
   state: &AppState,
   request: &PushRequest,
   raw_token: &str,
+  server_id: &str,
 ) -> Result<(PushMessage, String), ApiError> {
   let limits = &state.config.limits;
   if !matches!(request.provider, PushProvider::Apns | PushProvider::Fcm) {
@@ -585,6 +609,15 @@ fn validate(
       "the sealed wake-up has an invalid size",
     ));
   }
+  if let Some(collapse_id) = &request.maybe_collapse_id
+    && (collapse_id.is_empty()
+      || collapse_id.len() > MAX_COLLAPSE_ID_CHARS
+      || !collapse_id.bytes().all(|byte| byte.is_ascii_graphic()))
+  {
+    return Err(ApiError::invalid(
+      "collapse_id must be 1 to 64 printable ASCII characters",
+    ));
+  }
   if matches!(request.kind, PushKind::Unknown(_)) || matches!(request.urgency, WireUrgency::Unknown(_)) {
     return Err(ApiError::invalid("unknown kind or urgency"));
   }
@@ -596,6 +629,10 @@ fn validate(
       _ => Urgency::Normal,
     },
     ttl: std::time::Duration::from_secs(u64::from(request.ttl_secs.min(limits.max_ttl_secs))),
+    maybe_collapse_id: request
+      .maybe_collapse_id
+      .as_deref()
+      .map(|collapse_id| scoped_collapse_id(server_id, collapse_id)),
   };
   Ok((message, token))
 }
