@@ -201,7 +201,8 @@ async fn push_handler(
   let raw_token = resolve_token(&state, &record, &request, now_ms)
     .await
     .map_err(|error| state.refuse(error))?;
-  let (message, token) = validate(&state, &request, &raw_token).map_err(|error| state.refuse(error))?;
+  let (message, token) =
+    validate(&state, &request, &raw_token, &record.server_id).map_err(|error| state.refuse(error))?;
   let sender = state
     .providers
     .get(&request.provider)
@@ -567,10 +568,24 @@ async fn resolve_token(
 
 /// The message to send and the token in its one canonical form (APNs: lower-case hex, which
 /// Apple treats case-insensitively; one device must not get a second per-token budget by case).
+/// The collapse ID that goes to Apple and Google: a hash of the server's ID and its own collapse
+/// ID. One app (and one token) serves every server, so a server must not be able to replace or
+/// withdraw another server's notification by sending its collapse ID, and the push services see
+/// nothing a server might have put in plain text. 43 characters, under APNs' 64.
+fn scoped_collapse_id(server_id: &str, collapse_id: &str) -> String {
+  use sha2::{Digest as _, Sha256};
+  let mut hasher = Sha256::new();
+  hasher.update(server_id.as_bytes());
+  hasher.update([0]);
+  hasher.update(collapse_id.as_bytes());
+  URL_SAFE_NO_PAD.encode(hasher.finalize())
+}
+
 fn validate(
   state: &AppState,
   request: &PushRequest,
   raw_token: &str,
+  server_id: &str,
 ) -> Result<(PushMessage, String), ApiError> {
   let limits = &state.config.limits;
   if !matches!(request.provider, PushProvider::Apns | PushProvider::Fcm) {
@@ -614,7 +629,10 @@ fn validate(
       _ => Urgency::Normal,
     },
     ttl: std::time::Duration::from_secs(u64::from(request.ttl_secs.min(limits.max_ttl_secs))),
-    maybe_collapse_id: request.maybe_collapse_id.clone(),
+    maybe_collapse_id: request
+      .maybe_collapse_id
+      .as_deref()
+      .map(|collapse_id| scoped_collapse_id(server_id, collapse_id)),
   };
   Ok((message, token))
 }

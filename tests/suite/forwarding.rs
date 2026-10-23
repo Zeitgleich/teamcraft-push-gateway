@@ -132,11 +132,27 @@ mod kinds_and_collapsing {
       assert_eq!(gateway.push(&client, &body).await.status(), 200);
     }
 
-    assert_eq!(gateway.apns.requests()[0].header("apns-collapse-id"), "k3Yh7Qm9");
+    // Scoped to the server: what Apple and Google get is a hash of the server's ID and its value.
+    let scoped = {
+      use base64::Engine as _;
+      use sha2::{Digest as _, Sha256};
+      let mut hasher = Sha256::new();
+      hasher.update(client.server_id.as_bytes());
+      hasher.update([0]);
+      hasher.update(b"k3Yh7Qm9");
+      base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hasher.finalize())
+    };
+    assert_eq!(gateway.apns.requests()[0].header("apns-collapse-id"), scoped);
     assert_eq!(
       gateway.fcm.requests()[0].json()["message"]["android"]["collapse_key"],
-      "k3Yh7Qm9"
+      scoped.as_str()
     );
+    // Another server's identical collapse ID becomes a different one.
+    let other = gateway.register_client().await;
+    let mut body = push_body("apns", "mention", &APNS_TOKEN.replace('b', "d"));
+    body["collapse_id"] = json!("k3Yh7Qm9");
+    assert_eq!(gateway.push(&other, &body).await.status(), 200);
+    assert_ne!(gateway.apns.requests()[1].header("apns-collapse-id"), scoped);
     // Without one, nothing is sent.
     gateway
       .push(
@@ -144,7 +160,7 @@ mod kinds_and_collapsing {
         &push_body("apns", "mention", &APNS_TOKEN.replace('a', "c")),
       )
       .await;
-    assert_eq!(gateway.apns.requests()[1].header("apns-collapse-id"), "");
+    assert_eq!(gateway.apns.requests()[2].header("apns-collapse-id"), "");
   }
 
   #[tokio::test]

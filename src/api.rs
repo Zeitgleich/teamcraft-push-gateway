@@ -201,7 +201,8 @@ pub struct PushRequest {
   pub sealed: Base64Bytes,
   /// Up to 64 printable ASCII characters naming the notification this one replaces (APNs
   /// `apns-collapse-id`, FCM `collapse_key`): an urgent repeat then replaces the earlier
-  /// notification instead of stacking. Opaque to the gateway; servers send a keyed hash.
+  /// notification instead of stacking. The gateway passes on a hash of the server's ID and this
+  /// value, so collapse IDs of different servers never meet, and Apple and Google never see it.
   #[serde(rename = "collapse_id", default, skip_serializing_if = "Option::is_none")]
   pub maybe_collapse_id: Option<String>,
 }

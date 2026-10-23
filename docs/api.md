@@ -75,9 +75,12 @@ answer. Refused with `403 registration_closed` on gateways that only accept keys
 }
 ```
 
-`collapse_id` (optional, opaque to the gateway; servers send a keyed hash, not an ID) becomes the APNs
-`apns-collapse-id` and the FCM `collapse_key`, so a later push with the same value replaces the earlier
-notification instead of stacking.
+`collapse_id` (optional) lets a later push of the same server replace the earlier notification instead of
+stacking. The gateway sends `base64url(SHA-256(server_id ‖ 0x00 ‖ collapse_id))` (43 characters) as the
+APNs `apns-collapse-id` and the FCM `collapse_key`: one server can't replace another server's notifications
+on a shared device, and Apple and Google never see the value a server chose. FCM's `collapse_key` only
+collapses messages not yet delivered (at most four keys per device at a time), it doesn't replace a
+notification already shown.
 
 Exactly one of `bound_token` and `token` (the raw APNs device token in hex or FCM registration token) is
 set. A raw `token` is only accepted while the gateway runs with `tokens.accept_unbound` (a transition
