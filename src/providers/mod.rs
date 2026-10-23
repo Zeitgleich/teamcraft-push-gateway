@@ -44,10 +44,41 @@ pub enum ProviderError {
   Gone,
   #[error("the push service rejected the request with status {0}")]
   Rejected(u16),
-  #[error("the push service is unavailable: {0}")]
-  Unavailable(String),
+  /// A temporary failure (5xx, 429, timeout); the server tries again later.
+  #[error("the push service is unavailable: {reason}")]
+  Unavailable {
+    reason: String,
+    /// How long the push service asked to wait (`Retry-After`), passed on to the server.
+    maybe_retry_after: Option<Duration>,
+  },
   #[error("the registration is invalid: {0}")]
   Invalid(String),
+}
+
+impl ProviderError {
+  /// A temporary failure without a hint how long to wait.
+  pub fn unavailable(reason: impl Into<String>) -> Self {
+    Self::Unavailable {
+      reason: reason.into(),
+      maybe_retry_after: None,
+    }
+  }
+}
+
+/// The longest wait a push service's `Retry-After` is passed on with; more is taken as this much.
+pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(60 * 60);
+
+/// Reads a push service's `Retry-After` in delay seconds (what FCM sends; APNs sends none).
+/// `None` if absent or not a number; capped at [`MAX_RETRY_AFTER`].
+pub fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+  let secs = headers
+    .get(reqwest::header::RETRY_AFTER)?
+    .to_str()
+    .ok()?
+    .trim()
+    .parse::<u64>()
+    .ok()?;
+  Some(Duration::from_secs(secs).min(MAX_RETRY_AFTER))
 }
 
 /// Sends one wake-up to one device token of one push service.

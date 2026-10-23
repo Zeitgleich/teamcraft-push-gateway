@@ -101,6 +101,8 @@ impl Received {
 pub struct Fake {
   received: Arc<Mutex<Vec<Received>>>,
   reply: Arc<Mutex<(u16, Value)>>,
+  /// `Retry-After` seconds sent with every following reply, if set.
+  retry_after: Arc<Mutex<Option<u64>>>,
   token_requests: Arc<Mutex<Vec<Received>>>,
 }
 
@@ -108,6 +110,11 @@ impl Fake {
   /// The reply for all following requests.
   pub fn set_reply(&self, status: u16, body: Value) {
     *self.reply.lock().unwrap() = (status, body);
+  }
+
+  /// Sends `Retry-After: secs` with every following reply (`None`: no header).
+  pub fn set_retry_after(&self, maybe_secs: Option<u64>) {
+    *self.retry_after.lock().unwrap() = maybe_secs;
   }
 
   pub fn requests(&self) -> Vec<Received> {
@@ -134,6 +141,7 @@ impl Fake {
     Self {
       received: Arc::default(),
       reply: Arc::new(Mutex::new((200, Value::Null))),
+      retry_after: Arc::default(),
       token_requests: Arc::default(),
     }
   }
@@ -152,11 +160,17 @@ impl Fake {
   fn answer(&self) -> Response {
     let (status, body) = self.reply.lock().unwrap().clone();
     let status = StatusCode::from_u16(status).unwrap();
-    if body.is_null() {
+    let mut response = if body.is_null() {
       status.into_response()
     } else {
       (status, axum::Json(body)).into_response()
+    };
+    if let Some(secs) = *self.retry_after.lock().unwrap() {
+      response
+        .headers_mut()
+        .insert(axum::http::header::RETRY_AFTER, secs.into());
     }
+    response
   }
 }
 

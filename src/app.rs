@@ -232,7 +232,7 @@ async fn push_handler(
     Ok(()) => (Outcome::Accepted, PushResult::Accepted),
     Err(ProviderError::Gone) => (Outcome::Gone, PushResult::TokenGone),
     Err(ProviderError::Rejected(_)) => (Outcome::Failed, PushResult::Rejected),
-    Err(ProviderError::Unavailable(_)) => (Outcome::Failed, PushResult::Unavailable),
+    Err(ProviderError::Unavailable { .. }) => (Outcome::Failed, PushResult::Unavailable),
     Err(ProviderError::Invalid(_)) => (Outcome::Failed, PushResult::Invalid),
   };
   state.limiter.record(server_id, outcome);
@@ -791,8 +791,15 @@ impl ApiError {
       ProviderError::Rejected(_) => {
         Self::new(ErrorCode::ProviderRejected, "the push service rejected the push")
       },
-      ProviderError::Unavailable(_) => {
-        Self::new(ErrorCode::ProviderUnavailable, "the push service is unavailable")
+      // How long Apple or Google asked to wait is passed on, so the server's retry queue waits as long.
+      ProviderError::Unavailable {
+        maybe_retry_after, ..
+      } => {
+        let error = Self::new(ErrorCode::ProviderUnavailable, "the push service is unavailable");
+        match maybe_retry_after.and_then(|wait| u32::try_from(wait.as_secs()).ok()) {
+          Some(secs) => error.with_retry_after(secs),
+          None => error,
+        }
       },
       ProviderError::Invalid(_) => Self::invalid("the push service does not accept this token"),
     }

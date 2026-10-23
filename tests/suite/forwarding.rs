@@ -71,6 +71,51 @@ async fn an_fcm_message_is_data_only_with_the_sealed_wake_up() {
 mod kinds_and_collapsing {
   use super::*;
 
+  /// Android Doze holds `NORMAL` messages until a maintenance window: everything the user should
+  /// see goes `HIGH`, and the push service may keep it for the TTL the server asked for.
+  #[tokio::test]
+  async fn every_visible_fcm_wake_up_is_high_priority_with_the_servers_ttl() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+    for (kind, urgency) in [
+      ("message", "high"),
+      ("mention", "high"),
+      ("test", "high"),
+      ("call", "high"),
+      ("call", "normal"),
+    ] {
+      let mut body = push_body("fcm", kind, FCM_TOKEN);
+      body["urgency"] = json!(urgency);
+      body["ttl_secs"] = json!(86_400);
+      assert_eq!(gateway.push(&client, &body).await.status(), 200, "{kind}");
+    }
+
+    for request in gateway.fcm.requests() {
+      let android = &request.json()["message"]["android"];
+      assert_eq!(android["priority"], "HIGH", "{android}");
+      assert_eq!(android["ttl"], "86400s", "{android}");
+    }
+  }
+
+  #[tokio::test]
+  async fn an_apns_alert_expires_with_the_servers_ttl() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+    let mut body = push_body("apns", "message", APNS_TOKEN);
+    body["ttl_secs"] = json!(3600);
+
+    assert_eq!(gateway.push(&client, &body).await.status(), 200);
+
+    let request = &gateway.apns.requests()[0];
+    let expiration: u64 = request.header("apns-expiration").parse().unwrap();
+    let now_secs = now_ms() / 1000;
+    assert!(
+      (now_secs + 3590..=now_secs + 3601).contains(&expiration),
+      "{expiration}"
+    );
+    assert_eq!(request.header("apns-priority"), "10");
+  }
+
   #[tokio::test]
   async fn a_dismissal_is_a_silent_background_push_without_alert_or_extension() {
     let gateway = Gateway::start().await;
@@ -278,6 +323,50 @@ mod provider_trouble {
     assert_eq!(
       response.json::<Value>().await.unwrap()["error_code"],
       "provider_unavailable"
+    );
+  }
+
+  #[tokio::test]
+  async fn the_wait_the_push_service_asks_for_is_passed_on() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+    gateway
+      .fcm
+      .set_reply(503, json!({"error": {"status": "UNAVAILABLE"}}));
+    gateway.fcm.set_retry_after(Some(120));
+
+    let response = gateway
+      .push(&client, &push_body("fcm", "message", FCM_TOKEN))
+      .await;
+
+    assert_eq!(response.status(), 502);
+    assert_eq!(response.headers()["retry-after"], "120");
+    let body = response.json::<Value>().await.unwrap();
+    assert_eq!(body["error_code"], "provider_unavailable");
+    assert_eq!(body["retry_after_secs"], 120);
+  }
+
+  #[tokio::test]
+  async fn an_outage_without_a_hint_names_no_wait() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+    gateway
+      .fcm
+      .set_reply(503, json!({"error": {"status": "UNAVAILABLE"}}));
+
+    let response = gateway
+      .push(&client, &push_body("fcm", "message", FCM_TOKEN))
+      .await;
+
+    assert_eq!(response.status(), 502);
+    assert!(response.headers().get("retry-after").is_none());
+    assert!(
+      response
+        .json::<Value>()
+        .await
+        .unwrap()
+        .get("retry_after_secs")
+        .is_none()
     );
   }
 
