@@ -32,7 +32,7 @@ async fn an_apns_alert_carries_the_sealed_wake_up_and_the_publishers_topic() {
 }
 
 #[tokio::test]
-async fn a_call_uses_the_voip_topic() {
+async fn a_call_is_a_mutable_alert_on_the_app_topic() {
   let gateway = Gateway::start().await;
   let client = gateway.register_client().await;
 
@@ -42,11 +42,11 @@ async fn a_call_uses_the_voip_topic() {
   assert_eq!(response.status(), 200);
 
   let request = &gateway.apns.requests()[0];
-  assert_eq!(request.header("apns-push-type"), "voip");
-  assert_eq!(
-    request.header("apns-topic"),
-    format!("{}.voip", push_fakes::APNS_BUNDLE_ID)
-  );
+  // Never VoIP: the device token is an alert token (`DeviceTokenNotForTopic` otherwise).
+  assert_eq!(request.header("apns-push-type"), "alert");
+  assert_eq!(request.header("apns-topic"), push_fakes::APNS_BUNDLE_ID);
+  assert_eq!(request.header("apns-priority"), "10");
+  assert_eq!(request.json()["aps"]["mutable-content"], 1);
   assert_eq!(sealed_from(request.json()["w"].as_str().unwrap()), SEALED);
 }
 

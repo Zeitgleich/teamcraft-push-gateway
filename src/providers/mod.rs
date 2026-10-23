@@ -21,7 +21,7 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub struct PushMessage {
   /// The sealed wake-up: opaque to the gateway and to push services.
   pub sealed: Vec<u8>,
-  /// What the wake-up is for. Push services only need it to pick a channel (APNs: VoIP for calls).
+  /// What the wake-up is for. Push services only need it to pick a channel (APNs: background push for `dismiss`; FCM: priority).
   pub kind: PushKind,
   pub urgency: Urgency,
   /// How long the push service may hold it if the device is offline.

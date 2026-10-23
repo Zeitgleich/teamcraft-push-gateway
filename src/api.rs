@@ -94,7 +94,7 @@ wire_enum! {
   pub enum PushKind {
     Message => "message",
     Mention => "mention",
-    /// A ring; APNs gets it on the VoIP topic.
+    /// A ring; APNs gets it as a mutable alert the app's extension hands to CallKit.
     Call => "call",
     /// The message was read on another device: withdraw its notification. Delivered silently
     /// (APNs background push, FCM data message at normal priority), never as an alert.

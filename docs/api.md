@@ -89,7 +89,8 @@ setting, off by default, announced as `are_bound_tokens_required: false` in `/v1
 
 - `provider`: `apns` or `fcm`. Anything else (including `webpush`, `unifiedpush`) is `400 invalid_request`.
 - `kind`: `message`, `mention`, `call`, `dismiss`, `test` (the ones `/v1/info` lists under `kinds`). It selects
-  the channel: APNs VoIP topic and push type for `call`; `dismiss` (a notification was read elsewhere:
+  the channel: `call` is a mutable alert at priority 10 on the bundle-ID topic like messages (never the VoIP
+  topic: the token is an alert token, and APNs would refuse it as `DeviceTokenNotForTopic`); `dismiss` (a notification was read elsewhere:
   withdraw it) is a silent push (APNs `background`, priority 5, `{aps:{content-available:1}}` plus the
   wake-up, bundle-ID topic; FCM data message at normal priority); `test` (a diagnostics push) is
   delivered like `mention`. A gateway refuses kinds it does not know (`400`); servers send only the listed
