@@ -22,7 +22,7 @@ mod signatures {
   async fn a_request_signed_with_another_key_is_refused() {
     let gateway = Gateway::start().await;
     let client = gateway.register_client().await;
-    let impostor = GatewayServerKey::generate(&mut rand_core::OsRng);
+    let impostor = GatewayServerKey::generate();
     let body = push_body("apns", "message", APNS_TOKEN).to_string().into_bytes();
 
     let response = gateway

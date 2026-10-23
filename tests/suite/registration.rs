@@ -41,7 +41,7 @@ async fn registering_twice_is_fine() {
 async fn a_key_cannot_be_registered_by_someone_who_does_not_hold_it() {
   let gateway = Gateway::start().await;
   let victim = Client::new();
-  let impostor = GatewayServerKey::generate(&mut rand_core::OsRng);
+  let impostor = GatewayServerKey::generate();
   let body = json!({"public_key": base64::Engine::encode(
     &base64::engine::general_purpose::STANDARD, victim.key.public_key().as_bytes())});
 
@@ -62,7 +62,7 @@ async fn a_key_cannot_be_registered_by_someone_who_does_not_hold_it() {
 #[tokio::test]
 async fn a_key_of_the_wrong_length_is_refused() {
   let gateway = Gateway::start().await;
-  let key = GatewayServerKey::generate(&mut rand_core::OsRng);
+  let key = GatewayServerKey::generate();
 
   let response = gateway
     .post_signed(
