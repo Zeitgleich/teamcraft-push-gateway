@@ -119,6 +119,17 @@ pushes until the apps next run. Back the directory up with the database.
 `bound_token`), for servers and apps that don't seal yet. It is off by default; with it off, a raw token
 is `410 token_unbound`.
 
+Binding protects tokens that were sealed from the start. The gateway can't tell a blob an app made from
+one anybody else made with its public key, so a raw token a server ever held (from the transition, an
+older app, an older database, or a leak of the token keys) can be sealed by that server for itself again
+and again. The apps therefore never hand out a raw token once they seal (Android also fetches a fresh
+FCM token once); iOS tokens only change with a reinstall. Keep the transition short. The token keys'
+backup can open every sealed token: store it like the APNs and FCM credentials.
+
+Revocations are kept no longer than the longest lifetime the gateway honours (`tokens.max_lifetime_secs`;
+a blob claiming more is refused for revocation as it is for pushes) and are looked up in the database,
+not held in memory, so revocation requests can't exhaust it.
+
 ## 5. Limits
 
 All values are settings with defaults; a per-server override is possible (`servers limits`).

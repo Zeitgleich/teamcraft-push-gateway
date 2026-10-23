@@ -210,6 +210,19 @@ mod revocation {
   }
 
   #[tokio::test]
+  async fn a_token_claiming_more_than_the_longest_lifetime_is_not_remembered() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+    // Anyone can seal (the key is public); a far-future blob must not stay in the table forever.
+    let max_ms = default_config().tokens.max_lifetime_secs * 1000;
+    let blob = gateway.seal_for(&client, "apns", APNS_TOKEN, max_ms + 86_400_000);
+    assert_eq!(
+      error(revoke(&gateway, &blob).await).await,
+      (410, "token_invalid".into())
+    );
+  }
+
+  #[tokio::test]
   async fn revocations_survive_a_restart() {
     let gateway = Gateway::start().await;
     let client = gateway.register_client().await;
