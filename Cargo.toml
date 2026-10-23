@@ -43,7 +43,7 @@ base64 = "0.23"
 ed25519-dalek = "3"
 figment = { version = "0.10", features = ["toml", "env"] }
 # Bound device tokens: HPKE (RFC 9180) base mode, DHKEM(X25519) / HKDF-SHA256 / ChaCha20-Poly1305.
-hpke-rs = { version = "0.7", default-features = false, features = ["std"] }
+hpke-rs = { version = "0.8", default-features = false, features = ["std"] }
 hpke-rs-crypto = "0.7"
 hpke-rs-rust-crypto = "0.7"
 # The APNs provider token (ES256) and the Google service account assertion (RS256).
