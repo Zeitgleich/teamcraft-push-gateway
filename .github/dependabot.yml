@@ -1,0 +1,28 @@
+# Dependency updates, weekly and grouped; major versions get a PR of their own. Actions are pinned
+# to commit SHAs (Dependabot bumps the SHA and the version comment together); the container base
+# images are pinned by tag and index digest in literal FROM lines.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /containers
+    schedule:
+      interval: weekly
+    groups:
+      images:
+        patterns: ["*"]
