@@ -180,19 +180,26 @@ impl TokenSender for FcmSender {
         return Err(ProviderError::Invalid("not an FCM registration token".into()));
       }
       // Calls and urgent messages must wake a dozing phone; the rest may wait for the next window.
-      let priority = if message.urgency == Urgency::High || message.kind == PushKind::Call {
+      // A dismissal only withdraws a notification: it never needs to wake a dozing phone.
+      let priority = if message.kind == PushKind::Dismiss {
+        "NORMAL"
+      } else if message.urgency == Urgency::High || message.kind == PushKind::Call {
         "HIGH"
       } else {
         "NORMAL"
       };
+      let mut android = json!({
+        "priority": priority,
+        "ttl": format!("{}s", message.ttl.as_secs()),
+      });
+      if let Some(collapse_id) = &message.maybe_collapse_id {
+        android["collapse_key"] = json!(collapse_id);
+      }
       let body = json!({
         "message": {
           "token": token,
           "data": { "w": URL_SAFE_NO_PAD.encode(&message.sealed) },
-          "android": {
-            "priority": priority,
-            "ttl": format!("{}s", message.ttl.as_secs()),
-          },
+          "android": android,
         }
       });
       let response = self

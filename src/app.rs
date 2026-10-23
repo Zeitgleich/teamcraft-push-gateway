@@ -33,6 +33,8 @@ use crate::store::{BlockState, ServerRecord, Store};
 use crate::tokens::{TOKEN_ALGORITHM, TokenError, TokenKeys, blob_digest};
 
 const MAX_TOKEN_CHARS: usize = 4096;
+/// APNs allows 64 bytes in `apns-collapse-id`; FCM's collapse key is shorter-lived but takes the same.
+const MAX_COLLAPSE_ID_CHARS: usize = 64;
 /// How long a client may take to send its request body.
 const BODY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -337,6 +339,13 @@ async fn info_handler(State(state): State<AppState>) -> Result<Json<InfoResponse
     token_key,
     are_bound_tokens_required: !state.config.tokens.accept_unbound,
     max_token_lifetime_secs: state.config.tokens.max_lifetime_secs,
+    kinds: vec![
+      PushKind::Message,
+      PushKind::Mention,
+      PushKind::Call,
+      PushKind::Dismiss,
+      PushKind::Test,
+    ],
   }))
 }
 
@@ -579,6 +588,15 @@ fn validate(
       "the sealed wake-up has an invalid size",
     ));
   }
+  if let Some(collapse_id) = &request.maybe_collapse_id
+    && (collapse_id.is_empty()
+      || collapse_id.len() > MAX_COLLAPSE_ID_CHARS
+      || !collapse_id.bytes().all(|byte| byte.is_ascii_graphic()))
+  {
+    return Err(ApiError::invalid(
+      "collapse_id must be 1 to 64 printable ASCII characters",
+    ));
+  }
   if matches!(request.kind, PushKind::Unknown(_)) || matches!(request.urgency, WireUrgency::Unknown(_)) {
     return Err(ApiError::invalid("unknown kind or urgency"));
   }
@@ -590,6 +608,7 @@ fn validate(
       _ => Urgency::Normal,
     },
     ttl: std::time::Duration::from_secs(u64::from(request.ttl_secs.min(limits.max_ttl_secs))),
+    maybe_collapse_id: request.maybe_collapse_id.clone(),
   };
   Ok((message, token))
 }

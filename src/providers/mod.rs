@@ -26,6 +26,8 @@ pub struct PushMessage {
   pub urgency: Urgency,
   /// How long the push service may hold it if the device is offline.
   pub ttl: Duration,
+  /// Replaces an earlier notification with the same ID (validated by the caller).
+  pub maybe_collapse_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

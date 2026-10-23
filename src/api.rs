@@ -96,6 +96,11 @@ wire_enum! {
     Mention => "mention",
     /// A ring; APNs gets it on the VoIP topic.
     Call => "call",
+    /// The message was read on another device: withdraw its notification. Delivered silently
+    /// (APNs background push, FCM data message at normal priority), never as an alert.
+    Dismiss => "dismiss",
+    /// A diagnostics push from the user's own server; handled like `mention`.
+    Test => "test",
   }
 }
 
@@ -194,6 +199,11 @@ pub struct PushRequest {
   pub maybe_bound_token: Option<Base64Bytes>,
   /// The wake-up sealed to the device's push key; opaque to the gateway.
   pub sealed: Base64Bytes,
+  /// Up to 64 printable ASCII characters naming the notification this one replaces (APNs
+  /// `apns-collapse-id`, FCM `collapse_key`): an urgent repeat then replaces the earlier
+  /// notification instead of stacking. Opaque to the gateway; servers send a keyed hash.
+  #[serde(rename = "collapse_id", default, skip_serializing_if = "Option::is_none")]
+  pub maybe_collapse_id: Option<String>,
 }
 
 // The token identifies a device at Apple or Google: keep it out of debug output.
@@ -228,6 +238,8 @@ pub struct InfoResponse {
   pub are_bound_tokens_required: bool,
   /// The longest validity a sealed token may claim.
   pub max_token_lifetime_secs: u64,
+  /// The wake-up kinds this gateway delivers; a server only sends the ones listed.
+  pub kinds: Vec<PushKind>,
 }
 
 /// The current token key (docs/api.md §6).

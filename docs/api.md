@@ -70,9 +70,14 @@ answer. Refused with `403 registration_closed` on gateways that only accept keys
   "urgency": "high",
   "ttl_secs": 3600,
   "bound_token": "<the device token, sealed by the app and bound to this server (§6)>",
-  "sealed": "<sealed wake-up>"
+  "sealed": "<sealed wake-up>",
+  "collapse_id": "<optional, 1-64 printable ASCII characters>"
 }
 ```
+
+`collapse_id` (optional, opaque to the gateway; servers send a keyed hash, not an ID) becomes the APNs
+`apns-collapse-id` and the FCM `collapse_key`, so a later push with the same value replaces the earlier
+notification instead of stacking.
 
 Exactly one of `bound_token` and `token` (the raw APNs device token in hex or FCM registration token) is
 set. A raw `token` is only accepted while the gateway runs with `tokens.accept_unbound` (a transition
@@ -80,8 +85,12 @@ setting, off by default, announced as `are_bound_tokens_required: false` in `/v1
 `410 token_unbound`.
 
 - `provider`: `apns` or `fcm`. Anything else (including `webpush`, `unifiedpush`) is `400 invalid_request`.
-- `kind`: `message`, `mention`, `call`. It only selects the channel (APNs: the VoIP topic and push type
-  for `call`); `urgency` (`normal`, `high`) the priority; `ttl_secs` is capped by the gateway.
+- `kind`: `message`, `mention`, `call`, `dismiss`, `test` (the ones `/v1/info` lists under `kinds`). It selects
+  the channel: APNs VoIP topic and push type for `call`; `dismiss` (a notification was read elsewhere:
+  withdraw it) is a silent push (APNs `background`, priority 5, `{aps:{content-available:1}}` plus the
+  wake-up, bundle-ID topic; FCM data message at normal priority); `test` (a diagnostics push) is
+  delivered like `mention`. A gateway refuses kinds it does not know (`400`); servers send only the listed
+  ones. `urgency` (`normal`, `high`) the priority; `ttl_secs` is capped by the gateway.
 - `sealed` is opaque to the gateway (the server seals it with the device's push key before it leaves
   the server, TeamCraft `docs/e2ee.md` §7). The gateway wraps it as the push service wants it.
 - The visible alert text of an APNs notification is the gateway's, so a server cannot put its own words
@@ -119,7 +128,8 @@ status) stay in the gateway's log.
   "limits": {"pushes_per_second": 50, "burst": 200, "pushes_per_day": 200000, "pushes_per_token_per_minute": 30},
   "token_key": {"key_id": "d943783749f67cb6", "algorithm": "hpke-x25519-hkdf-sha256-chacha20poly1305", "public_key": "<32 bytes>"},
   "are_bound_tokens_required": true,
-  "max_token_lifetime_secs": 7776000
+  "max_token_lifetime_secs": 7776000,
+  "kinds": ["message", "mention", "call", "dismiss", "test"]
 }
 ```
 

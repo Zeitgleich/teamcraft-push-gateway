@@ -68,6 +68,108 @@ async fn an_fcm_message_is_data_only_with_the_sealed_wake_up() {
   assert!(message.get("notification").is_none());
 }
 
+mod kinds_and_collapsing {
+  use super::*;
+
+  #[tokio::test]
+  async fn a_dismissal_is_a_silent_background_push_without_alert_or_extension() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+    let mut body = push_body("apns", "dismiss", APNS_TOKEN);
+    body["urgency"] = json!("high");
+
+    assert_eq!(gateway.push(&client, &body).await.status(), 200);
+
+    let request = &gateway.apns.requests()[0];
+    assert_eq!(request.header("apns-push-type"), "background");
+    assert_eq!(request.header("apns-priority"), "5");
+    assert_eq!(request.header("apns-topic"), push_fakes::APNS_BUNDLE_ID);
+    let payload = request.json();
+    assert_eq!(payload["aps"], json!({"content-available": 1}));
+    assert_eq!(sealed_from(payload["w"].as_str().unwrap()), SEALED);
+  }
+
+  #[tokio::test]
+  async fn a_dismissal_never_wakes_a_dozing_android_phone() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+    let mut body = push_body("fcm", "dismiss", FCM_TOKEN);
+    body["urgency"] = json!("high");
+
+    assert_eq!(gateway.push(&client, &body).await.status(), 200);
+
+    let message = &gateway.fcm.requests()[0].json()["message"];
+    assert_eq!(message["android"]["priority"], "NORMAL");
+    assert!(message.get("notification").is_none());
+  }
+
+  #[tokio::test]
+  async fn a_test_push_looks_like_a_mention() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+
+    assert_eq!(
+      gateway
+        .push(&client, &push_body("apns", "test", APNS_TOKEN))
+        .await
+        .status(),
+      200
+    );
+
+    let request = &gateway.apns.requests()[0];
+    assert_eq!(request.header("apns-push-type"), "alert");
+    assert_eq!(request.json()["aps"]["mutable-content"], 1);
+  }
+
+  #[tokio::test]
+  async fn the_collapse_id_replaces_the_earlier_notification() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+    for provider in ["apns", "fcm"] {
+      let token = if provider == "apns" { APNS_TOKEN } else { FCM_TOKEN };
+      let mut body = push_body(provider, "mention", token);
+      body["collapse_id"] = json!("k3Yh7Qm9");
+      assert_eq!(gateway.push(&client, &body).await.status(), 200);
+    }
+
+    assert_eq!(gateway.apns.requests()[0].header("apns-collapse-id"), "k3Yh7Qm9");
+    assert_eq!(
+      gateway.fcm.requests()[0].json()["message"]["android"]["collapse_key"],
+      "k3Yh7Qm9"
+    );
+    // Without one, nothing is sent.
+    gateway
+      .push(
+        &client,
+        &push_body("apns", "mention", &APNS_TOKEN.replace('a', "c")),
+      )
+      .await;
+    assert_eq!(gateway.apns.requests()[1].header("apns-collapse-id"), "");
+  }
+
+  #[tokio::test]
+  async fn a_bad_collapse_id_is_refused() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+    for bad in ["", &"x".repeat(65), "with space", "ünï"] {
+      let mut body = push_body("apns", "mention", APNS_TOKEN);
+      body["collapse_id"] = json!(bad);
+      assert_eq!(gateway.push(&client, &body).await.status(), 400, "{bad:?}");
+    }
+    assert!(gateway.apns.requests().is_empty());
+  }
+
+  #[tokio::test]
+  async fn the_info_document_lists_the_kinds() {
+    let gateway = Gateway::start().await;
+    let info = gateway.get("/v1/info").await.json::<Value>().await.unwrap();
+    assert_eq!(
+      info["kinds"],
+      json!(["message", "mention", "call", "dismiss", "test"])
+    );
+  }
+}
+
 mod invalid_tokens {
   use super::*;
 
