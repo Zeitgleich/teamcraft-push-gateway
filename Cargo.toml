@@ -45,7 +45,7 @@ figment = { version = "0.10", features = ["toml", "env"] }
 # Bound device tokens: HPKE (RFC 9180) base mode, DHKEM(X25519) / HKDF-SHA256 / ChaCha20-Poly1305.
 hpke-rs = { version = "0.7", default-features = false, features = ["std"] }
 hpke-rs-crypto = "0.7"
-hpke-rs-rust-crypto = "0.7"
+hpke-rs-rust-crypto = "0.8"
 # The APNs provider token (ES256) and the Google service account assertion (RS256).
 jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
