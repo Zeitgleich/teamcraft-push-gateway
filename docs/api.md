@@ -94,7 +94,9 @@ setting, off by default, announced as `are_bound_tokens_required: false` in `/v1
   withdraw it) is a silent push (APNs `background`, priority 5, `{aps:{content-available:1}}` plus the
   wake-up, bundle-ID topic; FCM data message at normal priority); `test` (a diagnostics push) is
   delivered like `mention`. A gateway refuses kinds it does not know (`400`); servers send only the listed
-  ones. `urgency` (`normal`, `high`) the priority; `ttl_secs` is capped by the gateway.
+  ones. `urgency` (`normal`, `high`) the priority; `ttl_secs` is capped by the gateway. The per-token
+  limit (`token_rate_limited`) is counted per kind class: messages (`message`, `mention`, `test`),
+  calls and withdrawals (`dismiss`) each have their own budget per device token and minute.
 - `sealed` is opaque to the gateway (the server seals it with the device's push key before it leaves
   the server, TeamCraft `docs/e2ee.md` §7). The gateway wraps it as the push service wants it.
 - The visible alert text of an APNs notification is the gateway's, so a server cannot put its own words

@@ -47,8 +47,11 @@ pushes_per_second = 50
 burst = 200
 pushes_per_day = 200000
 pushes_per_token_per_minute = 30
-# Call pushes (VoIP rings) per device token and minute, across all servers.
+# Call pushes (rings) per device token and minute, across all servers.
 call_pushes_per_token_per_minute = 6
+# Withdrawals (dismiss: read on another device) per device token and minute, a budget of their own;
+# the server's rate and daily quota still count them.
+dismiss_pushes_per_token_per_minute = 120
 # All servers together, per push service: protects the publisher's APNs/FCM quotas.
 global_pushes_per_second = 2000
 global_burst = 10000
