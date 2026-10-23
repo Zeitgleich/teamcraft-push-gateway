@@ -6,6 +6,12 @@ the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
 ## [Unreleased]
 
+### Changed
+
+- Withdrawals (`dismiss`) count against a per-token budget of their own
+  (`dismiss_pushes_per_token_per_minute`, default 120), so reading many conversations never uses up the
+  budget for messages.
+
 ## [1.0.0] - unreleased
 
 First release, for TeamCraft 1.0.

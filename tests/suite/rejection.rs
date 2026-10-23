@@ -331,6 +331,38 @@ mod limits {
   }
 
   #[tokio::test]
+  async fn withdrawals_have_their_own_token_budget() {
+    let mut limits = config(1000, 1000, 1000, 2);
+    limits.limits.dismiss_pushes_per_token_per_minute = 3;
+    let gateway = Gateway::start_with(limits).await;
+    let client = gateway.register_client().await;
+    // Reading many conversations: withdrawals up to their own limit...
+    for _ in 0..3 {
+      assert_eq!(
+        gateway
+          .push(&client, &push_body("apns", "dismiss", APNS_TOKEN))
+          .await
+          .status(),
+        200
+      );
+    }
+    let response = gateway
+      .push(&client, &push_body("apns", "dismiss", APNS_TOKEN))
+      .await;
+    assert_eq!(code(response).await, (429, "token_rate_limited".into()));
+    // ...and the next messages still get through.
+    for _ in 0..2 {
+      assert_eq!(
+        gateway
+          .push(&client, &push_body("apns", "message", APNS_TOKEN))
+          .await
+          .status(),
+        200
+      );
+    }
+  }
+
+  #[tokio::test]
   async fn the_same_token_through_two_servers_shares_the_token_limit() {
     let gateway = Gateway::start_with(config(1000, 1000, 1000, 1)).await;
     let (first, second) = (gateway.register_client().await, gateway.register_client().await);

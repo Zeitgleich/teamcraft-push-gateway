@@ -26,7 +26,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use tracing::{debug, warn};
 
 use crate::config::{GatewayConfig, RegistrationMode};
-use crate::limits::{DAY_MS, Limited, Limiter, Outcome, ServerLimits};
+use crate::limits::{DAY_MS, Limited, Limiter, Outcome, ServerLimits, TokenClass};
 use crate::metrics::{Metrics, PushResult, Refusal};
 use crate::providers::Providers;
 use crate::store::{BlockState, ServerRecord, Store};
@@ -637,7 +637,8 @@ fn validate(
   Ok((message, token))
 }
 
-/// The server's rate and daily quota, the token's (stricter for calls), then the push service's
+/// The server's rate and daily quota, the token's (stricter for calls, separate for withdrawals),
+/// then the push service's
 /// budget all servers share.
 async fn admit(
   state: &AppState,
@@ -667,15 +668,14 @@ async fn admit(
     .admit_server(&record.server_id, limits, day, now_ms)
     .map_err(|limited| state.limited(limited))?;
   let limits = &state.config.limits;
-  let is_call = *kind == PushKind::Call;
-  let per_token = if is_call {
-    limits.call_pushes_per_token_per_minute
-  } else {
-    limits.pushes_per_token_per_minute
+  let (class, per_token) = match kind {
+    PushKind::Call => (TokenClass::Call, limits.call_pushes_per_token_per_minute),
+    PushKind::Dismiss => (TokenClass::Dismiss, limits.dismiss_pushes_per_token_per_minute),
+    _ => (TokenClass::Message, limits.pushes_per_token_per_minute),
   };
   state
     .limiter
-    .admit_token(token, is_call, per_token, now_ms)
+    .admit_token(token, class, per_token, now_ms)
     .map_err(|limited| state.limited(limited))?;
   let provider_key = match provider {
     PushProvider::Apns => "apns",

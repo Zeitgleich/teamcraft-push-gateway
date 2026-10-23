@@ -13,6 +13,16 @@ use crate::store::UsageCounts;
 const MINUTE_MS: u64 = 60_000;
 const HOUR_MS: u64 = 3_600_000;
 pub const DAY_MS: u64 = 86_400_000;
+
+/// Which per-token budget a push counts against: rings are few and loud, withdrawals many and
+/// silent, so neither shares the message budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TokenClass {
+  Message,
+  Call,
+  Dismiss,
+}
+
 /// Entries kept at most; beyond this the sweep drops the oldest first. A guard against floods of
 /// distinct tokens, not something a healthy server reaches.
 const MAX_TRACKED_TOKENS: usize = 1_000_000;
@@ -196,10 +206,16 @@ impl Limiter {
       .collect()
   }
 
-  /// At most `per_minute` pushes per device token, class (`is_call`) and minute, over all servers.
-  /// The token is only hashed here.
-  pub fn admit_token(&self, token: &str, is_call: bool, per_minute: u32, now_ms: u64) -> Result<(), Limited> {
-    let key = self.token_hasher.hash_one((token, is_call));
+  /// At most `per_minute` pushes per device token, class and minute, over all servers. The token is
+  /// only hashed here.
+  pub fn admit_token(
+    &self,
+    token: &str,
+    class: TokenClass,
+    per_minute: u32,
+    now_ms: u64,
+  ) -> Result<(), Limited> {
+    let key = self.token_hasher.hash_one((token, class));
     let mut tokens = lock(&self.tokens);
     let window = tokens.entry(key).or_insert(Window {
       started_ms: now_ms,
@@ -414,17 +430,33 @@ mod tests {
   fn one_token_gets_a_limited_number_per_minute() {
     let limiter = Limiter::default();
     for _ in 0..2 {
-      limiter.admit_token("token", false, 2, 0).unwrap();
+      limiter.admit_token("token", TokenClass::Message, 2, 0).unwrap();
     }
     assert!(matches!(
-      limiter.admit_token("token", false, 2, 1000),
+      limiter.admit_token("token", TokenClass::Message, 2, 1000),
       Err(Limited::Token { .. })
     ));
     // Calls have their own (smaller) budget.
-    limiter.admit_token("token", true, 1, 1000).unwrap();
-    assert!(limiter.admit_token("token", true, 1, 1000).is_err());
-    limiter.admit_token("other", false, 2, 1000).unwrap();
-    limiter.admit_token("token", false, 2, MINUTE_MS).unwrap();
+    limiter.admit_token("token", TokenClass::Call, 1, 1000).unwrap();
+    assert!(limiter.admit_token("token", TokenClass::Call, 1, 1000).is_err());
+    limiter
+      .admit_token("other", TokenClass::Message, 2, 1000)
+      .unwrap();
+    limiter
+      .admit_token("token", TokenClass::Message, 2, MINUTE_MS)
+      .unwrap();
+    // Withdrawals have their own budget beside messages and calls.
+    limiter
+      .admit_token("token", TokenClass::Dismiss, 1, MINUTE_MS)
+      .unwrap();
+    assert!(
+      limiter
+        .admit_token("token", TokenClass::Dismiss, 1, MINUTE_MS)
+        .is_err()
+    );
+    limiter
+      .admit_token("token", TokenClass::Message, 2, MINUTE_MS)
+      .unwrap();
   }
 
   #[test]
@@ -492,7 +524,7 @@ mod tests {
   fn the_sweep_forgets_what_expired() {
     let limiter = Limiter::default();
     limiter.admit_request_id("s", [1; 16], 1000, 0).unwrap();
-    limiter.admit_token("t", false, 1, 0).unwrap();
+    limiter.admit_token("t", TokenClass::Message, 1, 0).unwrap();
     limiter.sweep(2 * MINUTE_MS);
     assert!(lock(&limiter.replay).is_empty());
     assert!(lock(&limiter.tokens).is_empty());
