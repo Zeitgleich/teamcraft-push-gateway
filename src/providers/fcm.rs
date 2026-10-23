@@ -15,7 +15,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 use tracing::warn;
 
-use super::{BoxFuture, ProviderError, PushMessage, TokenSender, Urgency, json_error};
+use super::{BoxFuture, ProviderError, PushMessage, TokenSender, Urgency, json_error, retry_after};
 
 pub const FCM_BASE_URL: &str = "https://fcm.googleapis.com";
 const SCOPE: &str = "https://www.googleapis.com/auth/firebase.messaging";
@@ -95,7 +95,7 @@ impl FcmSender {
       .timeout(settings.timeout)
       .redirect(reqwest::redirect::Policy::none())
       .build()
-      .map_err(|e| ProviderError::Unavailable(e.without_url().to_string()))?;
+      .map_err(|e| ProviderError::unavailable(e.without_url().to_string()))?;
     Ok(Self {
       client_email: account.client_email,
       key,
@@ -138,14 +138,14 @@ impl FcmSender {
       ])
       .send()
       .await
-      .map_err(|e| ProviderError::Unavailable(e.without_url().to_string()))?;
+      .map_err(|e| ProviderError::unavailable(e.without_url().to_string()))?;
     let status = response.status();
     if !status.is_success() {
       warn!(%status, "the Google token endpoint refused the service account");
       // Bad credentials are the operator's to fix; a server error is Google's.
       return Err(
         if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS {
-          ProviderError::Unavailable(format!("token endpoint status {status}"))
+          ProviderError::unavailable(format!("token endpoint status {status}"))
         } else {
           ProviderError::Rejected(status.as_u16())
         },
@@ -154,7 +154,7 @@ impl FcmSender {
     let token: TokenResponse = response
       .json()
       .await
-      .map_err(|_| ProviderError::Unavailable("unreadable token response".into()))?;
+      .map_err(|_| ProviderError::unavailable("unreadable token response"))?;
     let lifetime = Duration::from_secs(token.expires_in).saturating_sub(TOKEN_MARGIN);
     let value = token.access_token.clone();
     *cached = Some(AccessToken {
@@ -210,11 +210,12 @@ impl TokenSender for FcmSender {
         .json(&body)
         .send()
         .await
-        .map_err(|e| ProviderError::Unavailable(e.without_url().to_string()))?;
+        .map_err(|e| ProviderError::unavailable(e.without_url().to_string()))?;
       let status = response.status();
       if status.is_success() {
         return Ok(());
       }
+      let maybe_retry_after = retry_after(response.headers());
       let error_status = response
         .json::<FcmErrorBody>()
         .await
@@ -225,17 +226,24 @@ impl TokenSender for FcmSender {
       if status == StatusCode::UNAUTHORIZED {
         self.forget_access_token().await;
       }
-      classify(status, &error_status)
+      classify(status, &error_status, maybe_retry_after)
     })
   }
 }
 
 /// Maps an FCM v1 error (<https://firebase.google.com/docs/reference/fcm/rest/v1/ErrorCode>).
-fn classify(status: StatusCode, error_status: &str) -> Result<(), ProviderError> {
+fn classify(
+  status: StatusCode,
+  error_status: &str,
+  maybe_retry_after: Option<Duration>,
+) -> Result<(), ProviderError> {
   match (status.as_u16(), error_status) {
     // The registration token is unknown or expired.
     (404, _) | (_, "UNREGISTERED") => Err(ProviderError::Gone),
-    (429, _) | (500..=599, _) => Err(ProviderError::Unavailable(format!("status {status}"))),
+    (429, _) | (500..=599, _) => Err(ProviderError::Unavailable {
+      reason: format!("status {status}"),
+      maybe_retry_after,
+    }),
     (code, reason) => {
       warn!(status = code, %reason, "FCM rejected the push");
       Err(ProviderError::Rejected(code))
@@ -260,7 +268,7 @@ mod tests {
   #[test]
   fn error_responses_are_classified() {
     let class =
-      |status: u16, reason: &str| classify(StatusCode::from_u16(status).unwrap(), reason).unwrap_err();
+      |status: u16, reason: &str| classify(StatusCode::from_u16(status).unwrap(), reason, None).unwrap_err();
     assert!(matches!(class(404, "NOT_FOUND"), ProviderError::Gone));
     assert!(matches!(class(400, "UNREGISTERED"), ProviderError::Gone));
     assert!(matches!(
@@ -273,9 +281,12 @@ mod tests {
     ));
     assert!(matches!(
       class(429, "QUOTA_EXCEEDED"),
-      ProviderError::Unavailable(_)
+      ProviderError::Unavailable { .. }
     ));
-    assert!(matches!(class(503, "UNAVAILABLE"), ProviderError::Unavailable(_)));
+    assert!(matches!(
+      class(503, "UNAVAILABLE"),
+      ProviderError::Unavailable { .. }
+    ));
   }
 
   #[test]

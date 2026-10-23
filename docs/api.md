@@ -118,7 +118,7 @@ Response `200`: `{"accepted": true}` once the push service accepted the wake-up.
 | 410  | `token_unbound`, `token_expired`, `token_invalid`, `token_revoked`, `token_server_mismatch` | The sealed token is no use for this server (§6): **forget the registration**; the app seals a new one |
 | 429  | `rate_limited`, `quota_exceeded`, `token_rate_limited`                                      | Retry after `Retry-After`; nothing is deleted                                                         |
 | 501  | `provider_not_configured`                                                                   | The gateway has no credentials for this provider                                                      |
-| 502  | `provider_unavailable`, `provider_rejected`                                                 | Apple/Google down, or the gateway's own credentials refused; retry later                              |
+| 502  | `provider_unavailable`, `provider_rejected`                                                 | Apple/Google down, or the gateway's own credentials refused; retry later (after `Retry-After`)        |
 
 `token_gone` and the sealed-token codes (all `410`) mean a device registration is dead (APNs `410`, `BadDeviceToken`,
 `DeviceTokenNotForTopic`; FCM `UNREGISTERED`, `404`). Provider internals (Apple's `reason`, Google's

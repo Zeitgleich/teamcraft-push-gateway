@@ -111,7 +111,7 @@ impl ApnsSender {
     }
     let http = builder
       .build()
-      .map_err(|e| ProviderError::Unavailable(e.without_url().to_string()))?;
+      .map_err(|e| ProviderError::unavailable(e.without_url().to_string()))?;
     Ok(Self {
       key,
       key_id: settings.key_id,
@@ -228,7 +228,7 @@ impl TokenSender for ApnsSender {
         .body(body)
         .send()
         .await
-        .map_err(|e| ProviderError::Unavailable(e.without_url().to_string()))?;
+        .map_err(|e| ProviderError::unavailable(e.without_url().to_string()))?;
       let status = response.status();
       if status.is_success() {
         return Ok(());
@@ -258,7 +258,7 @@ fn classify(
       warn!(%reason, "APNs rejected the provider token");
       Err(ProviderError::Rejected(403))
     },
-    (429, _) | (500..=599, _) => Err(ProviderError::Unavailable(format!("status {status}"))),
+    (429, _) | (500..=599, _) => Err(ProviderError::unavailable(format!("status {status}"))),
     (code, _) => {
       warn!(status = code, %reason, "APNs rejected the push");
       Err(ProviderError::Rejected(code))
@@ -296,11 +296,11 @@ mod tests {
     ));
     assert!(matches!(
       class(429, "TooManyRequests"),
-      ProviderError::Unavailable(_)
+      ProviderError::Unavailable { .. }
     ));
     assert!(matches!(
       class(503, "ServiceUnavailable"),
-      ProviderError::Unavailable(_)
+      ProviderError::Unavailable { .. }
     ));
   }
 }

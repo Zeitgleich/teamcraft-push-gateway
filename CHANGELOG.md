@@ -8,6 +8,8 @@ the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
 ### Changed
 
+- `502 provider_unavailable` carries the push service's `Retry-After` (header and `retry_after_secs`,
+  at most one hour) when FCM sent one, so servers wait as long as Google asked.
 - Withdrawals (`dismiss`) count against a per-token budget of their own
   (`dismiss_pushes_per_token_per_minute`, default 120), so reading many conversations never uses up the
   budget for messages.
