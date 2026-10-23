@@ -1,6 +1,7 @@
-//! APNs over HTTP/2 with provider token authentication (a `.p8` key). Message pushes are alerts with
-//! `mutable-content`, so the iOS notification service extension can open the sealed wake-up; call
-//! pushes use the VoIP topic (e2ee.md §7). The alert text is generic: Apple never sees content.
+//! APNs over HTTP/2 with provider token authentication (a `.p8` key). Message and call pushes are
+//! alerts with `mutable-content`, so the iOS notification service extension can open the sealed
+//! wake-up (and hand a call to CallKit); `dismiss` is a silent background push (TeamCraft e2ee.md §7).
+//! The alert text is generic: Apple never sees content.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -21,16 +22,13 @@ pub const APNS_SANDBOX_URL: &str = "https://api.sandbox.push.apple.com";
 
 /// Apple wants a provider token refreshed at most every 20 minutes and rejects ones older than an hour.
 const TOKEN_LIFETIME_SECS: u64 = 40 * 60;
-/// Calls ring now or not at all. The sealed wake-up sits under the key `w` (same for FCM), which is
-/// what the apps read.
-const VOIP_EXPIRATION: &str = "0";
 
 /// Everything the APNs sender needs. The key is the contents of the `.p8` file.
 pub struct ApnsSettings {
   pub key_pem: SecretString,
   pub key_id: String,
   pub team_id: String,
-  /// The app's bundle ID; VoIP pushes go to `<bundle_id>.voip`.
+  /// The app's bundle ID (the APNs topic).
   pub bundle_id: String,
   /// `https://api.push.apple.com`, the sandbox, or a fake in tests. Plain `http://` uses HTTP/2
   /// without TLS (tests only).
@@ -94,12 +92,6 @@ struct BackgroundPayload<'a> {
 struct BackgroundAps {
   #[serde(rename = "content-available")]
   content_available: u8,
-}
-
-#[derive(Serialize)]
-struct VoipPayload<'a> {
-  #[serde(rename = "w")]
-  sealed: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -180,9 +172,11 @@ impl TokenSender for ApnsSender {
         return Err(ProviderError::Invalid("not an APNs device token".into()));
       }
       let now = jsonwebtoken::get_current_timestamp();
-      let is_call = message.kind == PushKind::Call;
       let sealed = URL_SAFE_NO_PAD.encode(&message.sealed);
       let is_dismiss = message.kind == PushKind::Dismiss;
+      // Calls are mutable alerts like messages: the notification service extension hands them to
+      // CallKit. A VoIP push needs the app's separate PushKit token; sent to this (alert) token,
+      // APNs answers `DeviceTokenNotForTopic`, which would make the server drop the device.
       let (push_type, topic, priority, expiration, body) = if is_dismiss {
         (
           "background",
@@ -194,14 +188,6 @@ impl TokenSender for ApnsSender {
             aps: BackgroundAps { content_available: 1 },
             sealed: &sealed,
           }),
-        )
-      } else if is_call {
-        (
-          "voip",
-          format!("{}.voip", self.bundle_id),
-          "10",
-          VOIP_EXPIRATION.to_owned(),
-          serde_json::to_vec(&VoipPayload { sealed: &sealed }),
         )
       } else {
         (

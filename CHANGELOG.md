@@ -12,7 +12,7 @@ First release, for TeamCraft 1.0.
 
 ### Added
 
-- The push gateway: signed `POST /v1/push` forwards sealed wake-ups to APNs (alert and VoIP) and
+- The push gateway: signed `POST /v1/push` forwards sealed wake-ups to APNs (alerts, calls as alerts, background) and
   FCM; dead tokens come back as `410 token_gone`.
 - Server registration with an Ed25519 key (`POST /v1/servers`), opaque server IDs, replay protection.
 - Per-server rate, burst and daily quota, per-token limit (stricter for calls), a budget per push

@@ -82,7 +82,7 @@ pub struct LimitsConfig {
   pub burst: u32,
   pub pushes_per_day: u64,
   pub pushes_per_token_per_minute: u32,
-  /// Call pushes (VoIP on iOS, high priority on Android) per device token and minute; far fewer
+  /// Call pushes (time-critical alerts on iOS, high priority on Android) per device token and minute; far fewer
   /// than messages, since a call ring can't be quiet.
   pub call_pushes_per_token_per_minute: u32,
   /// All servers together, per push service: protects the publisher's APNs and FCM quotas from
@@ -138,7 +138,7 @@ pub struct ApnsConfig {
   pub maybe_key_id: Option<String>,
   #[serde(rename = "team_id")]
   pub maybe_team_id: Option<String>,
-  /// The store app's bundle ID (topic; calls use `<bundle_id>.voip`).
+  /// The store app's bundle ID (the APNs topic of every push).
   #[serde(rename = "bundle_id")]
   pub maybe_bundle_id: Option<String>,
   pub use_sandbox: bool,
