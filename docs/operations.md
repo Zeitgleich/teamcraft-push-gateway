@@ -58,6 +58,23 @@ release). It runs as UID 65532 with a read-only root filesystem; mount a volume 
 `/var/lib/teamcraft-push-gateway` (writable for that UID) for the database. The image binds all
 addresses and `HEALTHCHECK`s with `teamcraft-push-gateway healthcheck`; do not publish port 8091.
 
+## Token keys
+
+Apps seal their device tokens to a key of the gateway (docs/design.md §4). The keys live in
+`tokens.dir` (default `token-keys`, in the container `/var/lib/teamcraft-push-gateway/token-keys`), owner-only,
+one file per key; a first key is created on start. **Back the directory up with the database**: without
+the keys, every sealed token stops opening (servers drop their registrations, apps register again).
+
+```sh
+teamcraft-push-gateway keys list
+teamcraft-push-gateway keys rotate        # a new current key; the running gateway picks it up within a minute
+teamcraft-push-gateway keys prune <keep>  # delete all but the newest <keep>; their tokens stop opening
+```
+
+Rotate now and then (and after any suspected leak). Keep retired keys for at least
+`tokens.max_lifetime_secs` (default 90 days) after a rotation, so blobs sealed to them still open until
+the apps seal again. `tokens.accept_unbound = true` accepts raw device tokens for a transition; keep it off.
+
 ## Operator CLI
 
 Works on the database file, also while the gateway runs (WAL mode); a block takes effect within

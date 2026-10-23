@@ -38,7 +38,8 @@ COPY --from=build /out/teamcraft-push-gateway /usr/local/bin/teamcraft-push-gate
 USER 65532:65532
 ENV TEAMCRAFT_PUSH_GATEWAY__SERVER__BIND=[::]:8090 \
     TEAMCRAFT_PUSH_GATEWAY__SERVER__HEALTH_BIND=[::]:8091 \
-    TEAMCRAFT_PUSH_GATEWAY__DATABASE__PATH=/var/lib/teamcraft-push-gateway/gateway.db
+    TEAMCRAFT_PUSH_GATEWAY__DATABASE__PATH=/var/lib/teamcraft-push-gateway/gateway.db \
+    TEAMCRAFT_PUSH_GATEWAY__TOKENS__DIR=/var/lib/teamcraft-push-gateway/token-keys
 VOLUME /var/lib/teamcraft-push-gateway
 EXPOSE 8090/tcp
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

@@ -8,6 +8,7 @@
 //! teamcraft-push-gateway [--config <file>] servers unblock <server-id>
 //! teamcraft-push-gateway [--config <file>] servers limits <server-id> <per-second|default> <burst|default> <per-day|default>
 //! teamcraft-push-gateway [--config <file>] servers allow <public-key-base64url>
+//! teamcraft-push-gateway [--config <file>] keys list | rotate | prune <keep>
 //! teamcraft-push-gateway [--config <file>] servers delete <server-id>
 //! teamcraft-push-gateway [--config <file>] servers prune <days>
 //! ```
@@ -31,6 +32,7 @@ use teamcraft_push_gateway::maintenance;
 use teamcraft_push_gateway::ops::{DEFAULT_TIMEOUT, bind_dual_stack, probe, probe_target, shutdown_signal};
 use teamcraft_push_gateway::providers::Providers;
 use teamcraft_push_gateway::store::{BlockState, LimitOverrides, Store};
+use teamcraft_push_gateway::tokens::TokenKeys;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -56,6 +58,7 @@ async fn run() -> anyhow::Result<()> {
     [] | ["serve"] => serve(config).await,
     ["healthcheck"] => healthcheck(&config),
     ["servers", rest @ ..] => servers(&config, rest).await,
+    ["keys", rest @ ..] => keys(&config, rest),
     _ => bail!("unknown command; see the usage in the crate documentation (src/main.rs)"),
   }
 }
@@ -82,7 +85,16 @@ async fn serve(config: GatewayConfig) -> anyhow::Result<()> {
   let store = Store::open(&config.database.path)
     .with_context(|| format!("opening the database {}", config.database.path.display()))?;
   let (bind, health_bind) = (config.server.bind, config.server.health_bind);
-  let state = AppState::new(config, store, providers);
+  let token_keys = TokenKeys::load_or_create(&config.tokens.dir, now_millis() / 1000)
+    .with_context(|| format!("token keys in {}", config.tokens.dir.display()))?;
+  if config.tokens.accept_unbound {
+    tracing::warn!("tokens.accept_unbound is on: raw device tokens are accepted (transition only)");
+  }
+  let state = AppState::new(config, store, providers, token_keys);
+  state
+    .restore_revocations()
+    .await
+    .context("loading the revocations")?;
 
   let api = bind_dual_stack(bind).with_context(|| format!("binding {bind}"))?;
   let internal = bind_dual_stack(health_bind).with_context(|| format!("binding {health_bind}"))?;
@@ -185,6 +197,46 @@ async fn servers(config: &GatewayConfig, args: &[&str]) -> anyhow::Result<()> {
     _ => bail!(
       "usage: servers list | block <id> <reason> | unblock <id> | limits <id> <n|default> <n|default> <n|default> | allow <key> | delete <id> | prune <days>"
     ),
+  }
+  Ok(())
+}
+
+/// The token keys apps seal device tokens to (docs/operations.md). Works on the key directory, also
+/// while the gateway runs; the gateway picks up a new key within a minute.
+fn keys(config: &GatewayConfig, args: &[&str]) -> anyhow::Result<()> {
+  let now_secs = now_millis() / 1000;
+  let mut keys = TokenKeys::load_or_create(&config.tokens.dir, now_secs)
+    .with_context(|| format!("token keys in {}", config.tokens.dir.display()))?;
+  let mut out = std::io::stdout().lock();
+  match args {
+    ["list"] => {
+      writeln!(out, "key_id            created_unix  state")?;
+      let current = keys.current()?.id_hex();
+      for key in keys.all() {
+        let state = if key.id_hex() == current {
+          "current"
+        } else {
+          "retired"
+        };
+        writeln!(out, "{}  {:<12}  {state}", key.id_hex(), key.created_secs())?;
+      }
+    },
+    ["rotate"] => {
+      let id = keys.rotate(now_secs)?.id_hex();
+      writeln!(
+        out,
+        "new current key {id}; keep the older ones until the tokens sealed to them expire"
+      )?;
+    },
+    ["prune", keep] => {
+      let keep: usize = keep.parse().context("keep is a number")?;
+      let removed = keys.prune(keep)?;
+      writeln!(
+        out,
+        "removed {removed} key(s); tokens sealed to them stop opening"
+      )?;
+    },
+    _ => bail!("usage: keys list | rotate | prune <number of newest keys to keep>"),
   }
   Ok(())
 }

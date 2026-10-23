@@ -16,7 +16,10 @@ pub async fn run(state: AppState) {
   loop {
     tokio::select! {
       _ = flush.tick() => flush_usage(&state).await,
-      _ = sweep.tick() => state.limiter.sweep(now_millis()),
+      _ = sweep.tick() => {
+        state.limiter.sweep(now_millis());
+        state.housekeeping(now_millis()).await;
+      },
       _ = prune.tick() => prune_unused(&state).await,
     }
   }

@@ -61,12 +61,10 @@ matter how many servers send to it; far fewer for call pushes), a budget per pus
 servers share, body and field limits, and the **block list**. A server can't send arbitrary text (the
 alert text is the gateway's) or choose topics (the gateway's bundle ID).
 
-Tokens are only ever handed to a server by the device itself, but **not bound to that server**: an app
-install has one token and gives it to every server it signs in to, so a server the user left (or a
-hostile one among several) can keep pushing generic alerts and call rings to the device for as long as
-the token is valid, within the per-token limits. It learns nothing and shows no content; the remedy is
-the block list. Binding tokens to servers (the app sealing the token for the gateway together with the
-server's ID and an expiry) is planned.
+Tokens are only ever handed to a server by the device itself, and since 1.0 the server never holds a
+usable one: the app seals it **bound to that server** (§4), so a leaked server database, a hostile
+server, or a server the user left can't push to the device through any other server's identity, and
+ends at the latest when the sealed token expires (or at once if the app revokes it).
 
 Many registered servers multiply the per-server limits; the shared per-service budget, low limits
 for new keys where needed (`servers limits`), the per-address registration limit, pruning of servers
@@ -83,7 +81,56 @@ The gateway holds credentials that can push to every installation of the store a
 accordingly: nothing else on it, credentials as files or container secrets, no shell access for chat
 operators.
 
-## 4. Limits
+## 4. Bound device tokens
+
+An APNs or FCM token is a bearer secret: whoever holds it and can reach a gateway can wake the device.
+Without more, an app that signs in to several servers would hand the same raw token to each, and
+any of them (or an attacker with a copy of its database) could push generic alerts and call rings to the
+device for as long as the token lives. So the app **seals the token for the gateway**, bound to one server:
+
+1. The gateway publishes a **token key** (X25519; `GET /v1/info`). The app gets it directly from its
+   gateway, not through the server it registers with (a hostile server could substitute its own key).
+2. The app seals `{provider, server_id, expires_at, token}` to that key (HPKE, RFC 9180) and gives the
+   server only the opaque blob. `server_id` is the ID the gateway knows the server by (a hash of the
+   server's gateway public key, which the server tells its apps).
+3. The server includes the blob in its signed push request instead of a token. The gateway opens it,
+   and uses the token only if the authenticated server is the `server_id` in it, it has not expired
+   (nor exceeds `tokens.max_lifetime_secs`), is for the right push service, and has not been revoked.
+   Each failure is `410` with its own code, which makes the server forget the registration; the app
+   registers again (sealing anew) the next time it runs.
+4. The app **seals again periodically** (before expiry, and when the gateway rotates its key), and on a
+   change of server. When the user **leaves or removes a server**, the app **revokes** the blob at the
+   gateway (`POST /v1/tokens/revoke`, which only whoever holds the blob can meaningfully call); the
+   gateway keeps its digest until the token would have expired anyway.
+
+What this does not do: a server can still push to the devices of its *own* users through its own identity,
+bounded by the limits (§5), and a server that lies to an app about its `server_id` (naming a
+colluding server) gets the app's pushes through that other server; neither gives it anything it
+doesn't have already, and neither reaches users of other servers. The token itself is never visible
+to the server, so it can't register it elsewhere.
+
+**Key management.** Token keys live in `tokens.dir` (files, owner-only). Rotation (`keys rotate`) makes a
+new key current; apps pick it up with their next sealing. Older keys keep opening existing blobs until
+`keys prune`, so keep them for at least `max_lifetime_secs` after a rotation. Losing the keys makes every
+blob unopenable: servers drop the registrations and apps register again; no message is lost, only
+pushes until the apps next run. Back the directory up with the database.
+
+**Transition.** `tokens.accept_unbound = true` also accepts raw tokens (`token` instead of
+`bound_token`), for servers and apps that don't seal yet. It is off by default; with it off, a raw token
+is `410 token_unbound`.
+
+Binding protects tokens that were sealed from the start. The gateway can't tell a blob an app made from
+one anybody else made with its public key, so a raw token a server ever held (from the transition, an
+older app, an older database, or a leak of the token keys) can be sealed by that server for itself again
+and again. The apps therefore never hand out a raw token once they seal (Android also fetches a fresh
+FCM token once); iOS tokens only change with a reinstall. Keep the transition short. The token keys'
+backup can open every sealed token: store it like the APNs and FCM credentials.
+
+Revocations are kept no longer than the longest lifetime the gateway honours (`tokens.max_lifetime_secs`;
+a blob claiming more is refused for revocation as it is for pushes) and are looked up in the database,
+not held in memory, so revocation requests can't exhaust it.
+
+## 5. Limits
 
 All values are settings with defaults; a per-server override is possible (`servers limits`).
 
@@ -106,7 +153,7 @@ All values are settings with defaults; a per-server override is possible (`serve
 Per-token windows are kept as a process-keyed 64-bit hash that only lives in memory; tokens themselves
 are never stored or logged.
 
-## 5. State store: SQLite
+## 6. State store: SQLite
 
 The gateway stores servers (ID, public key, created and last seen, block state and reason, limit
 overrides) and **daily counters** per server (accepted, token gone, failed). Everything else (rate-limit
@@ -123,7 +170,7 @@ of quota accounting. The trade-off is a single instance: running several would n
 shared storage. One instance handles far more pushes than the expected number of servers send (the
 bottleneck is Apple's and Google's API latency); revisit when high availability is needed.
 
-## 6. Decisions
+## 7. Decisions
 
 - **Per request, not a long-lived stream.** One signed POST per wake-up keeps the gateway stateless per
   connection and trivially load-balanceable. Batching is a later optimization.
@@ -135,3 +182,8 @@ bottleneck is Apple's and Google's API latency); revisit when high availability 
 - **The contract is a separate repository.** Like a push proxy next to a chat server, the gateway is built,
   released and run by the publisher independently of server releases; only [api.md](api.md) and the shared
   JSON fixtures connect the two.
+- **Sealing in the app, not in the server.** Only the app can create a blob the server can't read; the
+  gateway key reaches the app from the gateway itself. HPKE is the standard construction for sealing to a
+  public key and already part of TeamCraft's cryptography.
+- **Expiry and revocation instead of a gateway-side device list.** The gateway stores digests of revoked
+  blobs until they expire, nothing about devices: no account, no token inventory.

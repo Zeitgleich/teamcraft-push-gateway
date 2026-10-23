@@ -18,6 +18,11 @@ First release, for TeamCraft 1.0.
 - Per-server rate, burst and daily quota, per-token limit (stricter for calls), a budget per push
   service shared by all servers, registration limits (IPv6 per /48), block list, pruning of servers
   that never push, and an operator CLI (`servers list|block|unblock|limits|allow|delete|prune`).
+- **Bound device tokens**: apps seal their APNs/FCM token to a gateway key (HPKE), bound to one server and
+  an expiry; servers send the sealed blob (`bound_token`) and the gateway refuses it for any other
+  server, after expiry, or after revocation (`POST /v1/tokens/revoke`). Key management with
+  `keys list|rotate|prune`; `tokens.accept_unbound` keeps raw tokens working for a transition (off by
+  default). `/v1/info` publishes the token key.
 - `/healthz` and `/metrics` on a separate listener; SQLite state; container image with signature,
   provenance attestation and SBOMs.
 

@@ -240,7 +240,8 @@ mod validation {
     }
     for body in cases {
       let status = gateway.push(&client, &body).await.status();
-      assert!(status == 400 || status == 413, "{body} -> {status}");
+      // An oversized token no longer fits a sealed blob: it can't be opened (410).
+      assert!([400, 410, 413].contains(&status.as_u16()), "{status}");
     }
     let too_big = gateway
       .post_signed(

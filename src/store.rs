@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS servers (
   -- Added by the operator (`servers allow`): never pruned for lack of use.
   is_operator_added INTEGER NOT NULL DEFAULT 0
 ) STRICT;
+CREATE TABLE IF NOT EXISTS revoked_tokens (
+  digest     BLOB PRIMARY KEY,
+  expires_at INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS usage (
   server_id TEXT NOT NULL,
   day       INTEGER NOT NULL,
@@ -289,6 +293,63 @@ impl Store {
             Ok(ServerSummary { record, today })
           })
           .collect()
+      })
+      .await
+  }
+
+  /// Remembers a revoked sealed token (its digest, never the token) until it would expire anyway.
+  pub async fn add_revocation(&self, digest: [u8; 32], expires_at: i64) -> Result<(), StoreError> {
+    self
+      .run(move |db| {
+        db.execute(
+          "INSERT OR REPLACE INTO revoked_tokens (digest, expires_at) VALUES (?1, ?2)",
+          params![digest.as_slice(), expires_at],
+        )?;
+        Ok(())
+      })
+      .await
+  }
+
+  /// Whether a sealed token (by its digest) is revoked and its revocation still matters at `now`
+  /// (seconds). Looked up on every push of a sealed token; revocations are not held in memory, so
+  /// their number can't exhaust it.
+  pub async fn is_revoked(&self, digest: [u8; 32], now: i64) -> Result<bool, StoreError> {
+    self
+      .run(move |db| {
+        Ok(
+          db.prepare_cached("SELECT 1 FROM revoked_tokens WHERE digest = ?1 AND expires_at > ?2")?
+            .exists(params![digest.as_slice(), now])?,
+        )
+      })
+      .await
+  }
+
+  /// The revocations that still matter at `now` (seconds).
+  pub async fn revocations(&self, now: i64) -> Result<Vec<([u8; 32], i64)>, StoreError> {
+    self
+      .run(move |db| {
+        let mut statement =
+          db.prepare("SELECT digest, expires_at FROM revoked_tokens WHERE expires_at > ?1")?;
+        let rows = statement
+          .query_map(params![now], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
+          })?
+          .collect::<Result<Vec<_>, _>>()?;
+        Ok(
+          rows
+            .into_iter()
+            .filter_map(|(digest, expires)| Some((<[u8; 32]>::try_from(digest.as_slice()).ok()?, expires)))
+            .collect(),
+        )
+      })
+      .await
+  }
+
+  pub async fn prune_revocations(&self, now: i64) -> Result<(), StoreError> {
+    self
+      .run(move |db| {
+        db.execute("DELETE FROM revoked_tokens WHERE expires_at <= ?1", params![now])?;
+        Ok(())
       })
       .await
   }
