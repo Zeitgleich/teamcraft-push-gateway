@@ -9,7 +9,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer as _, SigningKey};
-use rand_core::{OsRng, RngCore};
 use serde_json::{Value, json};
 use teamcraft_push_gateway::api::{
   PUSH_PATH as GATEWAY_PUSH_PATH, REGISTER_PATH as GATEWAY_REGISTER_PATH,
@@ -32,9 +31,9 @@ pub mod push_fakes;
 pub struct GatewayServerKey(SigningKey);
 
 impl GatewayServerKey {
-  pub fn generate(_rng: &mut OsRng) -> Self {
+  pub fn generate() -> Self {
     let mut seed = [0u8; 32];
-    OsRng.fill_bytes(&mut seed);
+    getrandom::fill(&mut seed).unwrap();
     Self(SigningKey::from_bytes(&seed))
   }
 
@@ -255,7 +254,7 @@ impl Gateway {
 
 impl Client {
   pub fn new() -> Self {
-    let key = GatewayServerKey::generate(&mut OsRng);
+    let key = GatewayServerKey::generate();
     let server_id = key.public_key().server_id();
     Self { key, server_id }
   }
@@ -264,7 +263,7 @@ impl Client {
 /// A push request body with a fresh request ID.
 pub fn push_body(provider: &str, kind: &str, token: &str) -> Value {
   let mut request_id = [0u8; 16];
-  OsRng.fill_bytes(&mut request_id);
+  getrandom::fill(&mut request_id).unwrap();
   json!({
     "request_id": STANDARD.encode(request_id),
     "provider": provider,
