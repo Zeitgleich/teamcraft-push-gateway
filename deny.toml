@@ -11,6 +11,12 @@ ignore = [
   # which hpke-rs always depends on. No runtime code, no known vulnerability. Same entry as TeamCraft's.
   # https://rustsec.org/advisories/RUSTSEC-2026-0173
   { id = "RUSTSEC-2026-0173", reason = "unmaintained compile-time proc macro via hax-lib (hpke-rs)" },
+  # Timing variability in crypto-bigint below 0.7.6, here 0.5 through elliptic-curve 0.13, which
+  # hpke-rs-rust-crypto 0.7 depends on; there is no patched 0.5 release. Exploiting it needs a local
+  # timing or microarchitectural side channel on the gateway host. Same entry as TeamCraft's; remove
+  # with the hpke-rs upgrade.
+  # https://rustsec.org/advisories/RUSTSEC-2026-0387
+  { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 only via elliptic-curve 0.13 (hpke-rs-rust-crypto); no patched 0.5 release" },
 ]
 
 [licenses]
