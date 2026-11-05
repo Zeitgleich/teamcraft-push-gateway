@@ -94,8 +94,10 @@ setting, off by default, announced as `are_bound_tokens_required: false` in `/v1
   withdraw it) is a silent push (APNs `background`, priority 5, `{aps:{content-available:1}}` plus the
   wake-up, bundle-ID topic; FCM data message at normal priority); `scheduled_seal` (the group of a
   scheduled message changed: the device seals it again) is silent too, but must get through Doze: APNs
-  like `dismiss`, FCM a data message at high priority with `v: "0"` next to the wake-up, which says
-  "silent" and no more, so the app shows nothing even if it can't open it; `test` (a diagnostics push) is
+  like `dismiss`, FCM a data message at high priority with `v: "0"` next to the wake-up, so the app shows
+  nothing even if it can't open it. Only this kind sets `v`, so on FCM it tags the kind: Google learns
+  that the device's user holds a scheduled message and that a group of theirs just changed, not which
+  (accepted by the app's design); `test` (a diagnostics push) is
   delivered like `mention`. A gateway refuses kinds it does not know (`400`); servers send only the listed
   ones. `urgency` (`normal`, `high`) the priority; `ttl_secs` is capped by the gateway. The per-token
   limit (`token_rate_limited`) is counted per kind class: messages (`message`, `mention`, `test`),
