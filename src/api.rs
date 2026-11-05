@@ -99,6 +99,10 @@ wire_enum! {
     /// The message was read on another device: withdraw its notification. Delivered silently
     /// (APNs background push, FCM data message at normal priority), never as an alert.
     Dismiss => "dismiss",
+    /// The group of a message the user scheduled changed: the device seals it again. Shows nothing,
+    /// but has to get through before the message's time: APNs background push, FCM data message at
+    /// high priority, never an alert.
+    ScheduledSeal => "scheduled_seal",
     /// A diagnostics push from the user's own server; handled like `mention`.
     Test => "test",
   }

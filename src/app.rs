@@ -335,6 +335,7 @@ async fn info_handler(State(state): State<AppState>) -> Result<Json<InfoResponse
       PushKind::Mention,
       PushKind::Call,
       PushKind::Dismiss,
+      PushKind::ScheduledSeal,
       PushKind::Test,
     ],
   }))
@@ -671,6 +672,7 @@ async fn admit(
   let (class, per_token) = match kind {
     PushKind::Call => (TokenClass::Call, limits.call_pushes_per_token_per_minute),
     PushKind::Dismiss => (TokenClass::Dismiss, limits.dismiss_pushes_per_token_per_minute),
+    PushKind::ScheduledSeal => (TokenClass::ScheduledSeal, limits.seal_pushes_per_token_per_minute),
     _ => (TokenClass::Message, limits.pushes_per_token_per_minute),
   };
   state

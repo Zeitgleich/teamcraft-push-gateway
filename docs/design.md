@@ -141,6 +141,7 @@ All values are settings with defaults; a per-server override is possible (`serve
 | `pushes_per_token_per_minute`               | 30             | per device token, across all servers |
 | `call_pushes_per_token_per_minute`          | 6              | call pushes per device token         |
 | `dismiss_pushes_per_token_per_minute`       | 120            | withdrawals per device token         |
+| `seal_pushes_per_token_per_minute`          | 6              | wakes to seal per device token       |
 | `global_pushes_per_second` / `global_burst` | 2,000 / 10,000 | per push service, all servers        |
 | `max_body_bytes`                            | 16 KiB         | per request                          |
 | `max_sealed_bytes`                          | 2 KiB          | per wake-up                          |
@@ -151,10 +152,10 @@ All values are settings with defaults; a per-server override is possible (`serve
 | `registration.max_servers`                  | 100,000        | total                                |
 | `database.prune_unused_after_days`          | 7              | servers that never pushed            |
 
-Per device token, messages, calls and withdrawals (`dismiss`) have budgets of their own: a user who
-reads many conversations in a row causes one withdrawal per conversation, and those must not use up
-the budget that lets the next message through. Withdrawals still count against the sending server's
-rate and daily quota.
+Per device token, messages, calls, withdrawals (`dismiss`) and wakes to seal (`scheduled_seal`) have
+budgets of their own: a user who reads many conversations in a row causes one withdrawal per conversation,
+and those must not use up the budget that lets the next message through. Withdrawals and wakes still count
+against the sending server's rate and daily quota.
 
 Per-token windows are kept as a process-keyed 64-bit hash that only lives in memory; tokens themselves
 are never stored or logged.

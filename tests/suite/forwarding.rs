@@ -149,6 +149,38 @@ mod kinds_and_collapsing {
   }
 
   #[tokio::test]
+  async fn a_wake_to_seal_is_a_silent_background_push_on_apns() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+    let mut body = push_body("apns", "scheduled_seal", APNS_TOKEN);
+    body["urgency"] = json!("high");
+
+    assert_eq!(gateway.push(&client, &body).await.status(), 200);
+
+    let request = &gateway.apns.requests()[0];
+    assert_eq!(request.header("apns-push-type"), "background");
+    assert_eq!(request.header("apns-priority"), "5");
+    let payload = request.json();
+    assert_eq!(payload["aps"], json!({"content-available": 1}));
+    assert_eq!(sealed_from(payload["w"].as_str().unwrap()), SEALED);
+  }
+
+  #[tokio::test]
+  async fn a_wake_to_seal_gets_through_doze_without_an_alert_and_says_it_is_silent() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+    let mut body = push_body("fcm", "scheduled_seal", FCM_TOKEN);
+    body["urgency"] = json!("normal");
+
+    assert_eq!(gateway.push(&client, &body).await.status(), 200);
+
+    let message = &gateway.fcm.requests()[0].json()["message"];
+    assert_eq!(message["android"]["priority"], "HIGH");
+    assert!(message.get("notification").is_none());
+    assert_eq!(message["data"]["v"], "0");
+  }
+
+  #[tokio::test]
   async fn a_test_push_looks_like_a_mention() {
     let gateway = Gateway::start().await;
     let client = gateway.register_client().await;
@@ -226,7 +258,7 @@ mod kinds_and_collapsing {
     let info = gateway.get("/v1/info").await.json::<Value>().await.unwrap();
     assert_eq!(
       info["kinds"],
-      json!(["message", "mention", "call", "dismiss", "test"])
+      json!(["message", "mention", "call", "dismiss", "scheduled_seal", "test"])
     );
   }
 }

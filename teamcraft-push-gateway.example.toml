@@ -52,6 +52,9 @@ call_pushes_per_token_per_minute = 6
 # Withdrawals (dismiss: read on another device) per device token and minute, a budget of their own;
 # the server's rate and daily quota still count them.
 dismiss_pushes_per_token_per_minute = 120
+# Wakes to seal a scheduled message again (scheduled_seal) per device token and minute, a budget of
+# their own; the server's rate and daily quota still count them.
+seal_pushes_per_token_per_minute = 6
 # All servers together, per push service: protects the publisher's APNs/FCM quotas.
 global_pushes_per_second = 2000
 global_burst = 10000
