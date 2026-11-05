@@ -89,6 +89,10 @@ pub struct LimitsConfig {
   /// budget of their own, so reading many conversations never uses up the one for messages. The
   /// server's own rate and daily quota still count them.
   pub dismiss_pushes_per_token_per_minute: u32,
+  /// Wakes to seal a scheduled message again (`scheduled_seal`) per device token and minute, in a
+  /// budget of their own. Servers send few of these; a high-priority push that shows nothing mustn't
+  /// be spent freely. The server's own rate and daily quota still count them.
+  pub seal_pushes_per_token_per_minute: u32,
   /// All servers together, per push service: protects the publisher's APNs and FCM quotas from
   /// many servers at once (each within its own limit).
   pub global_pushes_per_second: u32,
@@ -220,6 +224,7 @@ impl Default for LimitsConfig {
       pushes_per_token_per_minute: 30,
       call_pushes_per_token_per_minute: 6,
       dismiss_pushes_per_token_per_minute: 120,
+      seal_pushes_per_token_per_minute: 6,
       global_pushes_per_second: 2_000,
       global_burst: 10_000,
       max_body_bytes: 16 * 1024,

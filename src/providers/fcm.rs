@@ -181,9 +181,12 @@ impl TokenSender for FcmSender {
       }
       // Calls and urgent messages must wake a dozing phone; the rest may wait for the next window.
       // A dismissal only withdraws a notification: it never needs to wake a dozing phone.
+      // A wake to seal a scheduled message has to get through Doze before the message's time.
       let priority = if message.kind == PushKind::Dismiss {
         "NORMAL"
-      } else if message.urgency == Urgency::High || message.kind == PushKind::Call {
+      } else if message.urgency == Urgency::High
+        || matches!(message.kind, PushKind::Call | PushKind::ScheduledSeal)
+      {
         "HIGH"
       } else {
         "NORMAL"
@@ -195,10 +198,17 @@ impl TokenSender for FcmSender {
       if let Some(collapse_id) = &message.maybe_collapse_id {
         android["collapse_key"] = json!(collapse_id);
       }
+      let mut data = json!({ "w": URL_SAFE_NO_PAD.encode(&message.sealed) });
+      // High priority but nothing to show: the app must know even if it can't open the wake-up. Only
+      // this kind sets it, so Google learns the kind: that the device's user holds a scheduled message
+      // and a group of theirs just changed, not which. Accepted (see docs/api.md).
+      if message.kind == PushKind::ScheduledSeal {
+        data["v"] = json!("0");
+      }
       let body = json!({
         "message": {
           "token": token,
-          "data": { "w": URL_SAFE_NO_PAD.encode(&message.sealed) },
+          "data": data,
           "android": android,
         }
       });

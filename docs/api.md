@@ -88,15 +88,21 @@ setting, off by default, announced as `are_bound_tokens_required: false` in `/v1
 `410 token_unbound`.
 
 - `provider`: `apns` or `fcm`. Anything else (including `webpush`, `unifiedpush`) is `400 invalid_request`.
-- `kind`: `message`, `mention`, `call`, `dismiss`, `test` (the ones `/v1/info` lists under `kinds`). It selects
+- `kind`: `message`, `mention`, `call`, `dismiss`, `scheduled_seal`, `test` (the ones `/v1/info` lists under `kinds`). It selects
   the channel: `call` is a mutable alert at priority 10 on the bundle-ID topic like messages (never the VoIP
   topic: the token is an alert token, and APNs would refuse it as `DeviceTokenNotForTopic`); `dismiss` (a notification was read elsewhere:
   withdraw it) is a silent push (APNs `background`, priority 5, `{aps:{content-available:1}}` plus the
-  wake-up, bundle-ID topic; FCM data message at normal priority); `test` (a diagnostics push) is
+  wake-up, bundle-ID topic; FCM data message at normal priority); `scheduled_seal` (the group of a
+  scheduled message changed: the device seals it again) is silent too, but must get through Doze: APNs
+  like `dismiss`, FCM a data message at high priority with `v: "0"` next to the wake-up, so the app shows
+  nothing even if it can't open it. Only this kind sets `v`, so on FCM it tags the kind: Google learns
+  that the device's user holds a scheduled message and that a group of theirs just changed, not which
+  (accepted by the app's design); `test` (a diagnostics push) is
   delivered like `mention`. A gateway refuses kinds it does not know (`400`); servers send only the listed
   ones. `urgency` (`normal`, `high`) the priority; `ttl_secs` is capped by the gateway. The per-token
   limit (`token_rate_limited`) is counted per kind class: messages (`message`, `mention`, `test`),
-  calls and withdrawals (`dismiss`) each have their own budget per device token and minute.
+  calls, withdrawals (`dismiss`) and wakes to seal (`scheduled_seal`) each have their own budget per device
+  token and minute.
 - `sealed` is opaque to the gateway (the server seals it with the device's push key before it leaves
   the server, TeamCraft `docs/e2ee.md` §7). The gateway wraps it as the push service wants it.
 - The visible alert text of an APNs notification is the gateway's, so a server cannot put its own words
