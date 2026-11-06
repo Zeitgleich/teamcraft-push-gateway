@@ -22,7 +22,7 @@ RUN --mount=type=cache,id=teamcraft-cargo-registry,target=/usr/local/cargo/regis
     cargo build --release --locked --bin teamcraft-push-gateway \
  && install -D target/release/teamcraft-push-gateway /out/teamcraft-push-gateway
 
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:83b9b50586253821cf63ffcec87d3d94265a093ad30da232039af962dd8f4edf
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:08476c244888bfb425bae1ae4dd7c17f093e972aab8426883d97f3c6f280f7c1
 LABEL org.opencontainers.image.title="teamcraft-push-gateway" \
       org.opencontainers.image.description="TeamCraft push gateway: forwards sealed wake-ups to APNs and FCM" \
       org.opencontainers.image.source="https://github.com/Zeitgleich/TeamCraft" \
