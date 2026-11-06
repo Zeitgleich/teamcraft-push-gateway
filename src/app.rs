@@ -336,6 +336,7 @@ async fn info_handler(State(state): State<AppState>) -> Result<Json<InfoResponse
       PushKind::Call,
       PushKind::Dismiss,
       PushKind::ScheduledSeal,
+      PushKind::Sync,
       PushKind::Test,
     ],
   }))
@@ -673,6 +674,7 @@ async fn admit(
     PushKind::Call => (TokenClass::Call, limits.call_pushes_per_token_per_minute),
     PushKind::Dismiss => (TokenClass::Dismiss, limits.dismiss_pushes_per_token_per_minute),
     PushKind::ScheduledSeal => (TokenClass::ScheduledSeal, limits.seal_pushes_per_token_per_minute),
+    PushKind::Sync => (TokenClass::Sync, limits.sync_pushes_per_token_per_minute),
     _ => (TokenClass::Message, limits.pushes_per_token_per_minute),
   };
   state

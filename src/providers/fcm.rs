@@ -180,9 +180,10 @@ impl TokenSender for FcmSender {
         return Err(ProviderError::Invalid("not an FCM registration token".into()));
       }
       // Calls and urgent messages must wake a dozing phone; the rest may wait for the next window.
-      // A dismissal only withdraws a notification: it never needs to wake a dozing phone.
-      // A wake to seal a scheduled message has to get through Doze before the message's time.
-      let priority = if message.kind == PushKind::Dismiss {
+      // A dismissal only withdraws a notification, a sync wake only fetches ahead of the next look:
+      // neither needs to wake a dozing phone, and Android lowers apps whose high-priority messages
+      // show nothing. A wake to seal a scheduled message has to get through Doze before its time.
+      let priority = if matches!(message.kind, PushKind::Dismiss | PushKind::Sync) {
         "NORMAL"
       } else if message.urgency == Urgency::High
         || matches!(message.kind, PushKind::Call | PushKind::ScheduledSeal)

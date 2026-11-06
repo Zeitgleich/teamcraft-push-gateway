@@ -22,6 +22,7 @@ pub enum TokenClass {
   Call,
   Dismiss,
   ScheduledSeal,
+  Sync,
 }
 
 /// Entries kept at most; beyond this the sweep drops the oldest first. A guard against floods of
