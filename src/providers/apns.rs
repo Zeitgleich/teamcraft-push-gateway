@@ -1,6 +1,7 @@
 //! APNs over HTTP/2 with provider token authentication (a `.p8` key). Message and call pushes are
 //! alerts with `mutable-content`, so the iOS notification service extension can open the sealed
-//! wake-up (and hand a call to CallKit); `dismiss` and `scheduled_seal` are silent background pushes (TeamCraft e2ee.md §7).
+//! wake-up (and hand a call to CallKit); `dismiss`, `scheduled_seal` and `sync` are silent background pushes
+//! (TeamCraft e2ee.md §7).
 //! The alert text is generic: Apple never sees content.
 
 use std::sync::Mutex;
@@ -173,7 +174,10 @@ impl TokenSender for ApnsSender {
       }
       let now = jsonwebtoken::get_current_timestamp();
       let sealed = URL_SAFE_NO_PAD.encode(&message.sealed);
-      let is_silent = matches!(message.kind, PushKind::Dismiss | PushKind::ScheduledSeal);
+      let is_silent = matches!(
+        message.kind,
+        PushKind::Dismiss | PushKind::ScheduledSeal | PushKind::Sync
+      );
       // Calls are mutable alerts like messages: the notification service extension hands them to
       // CallKit. A VoIP push needs the app's separate PushKit token; sent to this (alert) token,
       // APNs answers `DeviceTokenNotForTopic`, which would make the server drop the device.

@@ -8,6 +8,11 @@ the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
 ### Changed
 
+- New wake-up kind `sync`, listed in `/v1/info`: the device fetches messages it got no visible push for in
+  the background (TeamCraft notifications.md, "Sync wake-ups"). Silent and delivered like `dismiss`
+  (APNs background push, FCM data message at normal priority, whatever the `urgency`), with a per-token
+  budget of its own (`sync_pushes_per_token_per_minute`, default 6). Servers send it only to a gateway that
+  lists it.
 - New wake-up kind `scheduled_seal`, listed in `/v1/info`: silent (APNs background push, FCM data message at
   high priority with `v: "0"`, which only this kind sets, so Google can tell the kind), with a per-token budget of its own (`seal_pushes_per_token_per_minute`,
   default 6). Servers send it only to a gateway that lists it.

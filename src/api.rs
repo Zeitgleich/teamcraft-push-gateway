@@ -103,6 +103,10 @@ wire_enum! {
     /// but has to get through before the message's time: APNs background push, FCM data message at
     /// high priority, never an alert.
     ScheduledSeal => "scheduled_seal",
+    /// New messages wait for the device that it got no visible push for: it catches up in the
+    /// background, so they are there when the app opens. Shows nothing and may wait: delivered like
+    /// `dismiss` (APNs background push, FCM data message at normal priority), never as an alert.
+    Sync => "sync",
     /// A diagnostics push from the user's own server; handled like `mention`.
     Test => "test",
   }

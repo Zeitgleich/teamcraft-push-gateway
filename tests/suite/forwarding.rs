@@ -166,6 +166,41 @@ mod kinds_and_collapsing {
   }
 
   #[tokio::test]
+  async fn a_sync_wake_is_a_silent_background_push_on_apns() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+    let mut body = push_body("apns", "sync", APNS_TOKEN);
+    body["urgency"] = json!("high");
+
+    assert_eq!(gateway.push(&client, &body).await.status(), 200);
+
+    let request = &gateway.apns.requests()[0];
+    assert_eq!(request.header("apns-push-type"), "background");
+    assert_eq!(request.header("apns-priority"), "5");
+    let payload = request.json();
+    assert_eq!(payload["aps"], json!({"content-available": 1}));
+    assert_eq!(sealed_from(payload["w"].as_str().unwrap()), SEALED);
+  }
+
+  /// A phone fetching ahead never needs waking from Doze, and Android lowers apps whose
+  /// high-priority messages show nothing: normal priority whatever the server asked, and no kind tag.
+  #[tokio::test]
+  async fn a_sync_wake_waits_for_the_next_window_and_carries_no_tag() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+    let mut body = push_body("fcm", "sync", FCM_TOKEN);
+    body["urgency"] = json!("high");
+
+    assert_eq!(gateway.push(&client, &body).await.status(), 200);
+
+    let message = &gateway.fcm.requests()[0].json()["message"];
+    assert_eq!(message["android"]["priority"], "NORMAL");
+    assert!(message.get("notification").is_none());
+    assert!(message["data"].get("v").is_none());
+    assert_eq!(sealed_from(message["data"]["w"].as_str().unwrap()), SEALED);
+  }
+
+  #[tokio::test]
   async fn a_wake_to_seal_gets_through_doze_without_an_alert_and_says_it_is_silent() {
     let gateway = Gateway::start().await;
     let client = gateway.register_client().await;
@@ -258,7 +293,15 @@ mod kinds_and_collapsing {
     let info = gateway.get("/v1/info").await.json::<Value>().await.unwrap();
     assert_eq!(
       info["kinds"],
-      json!(["message", "mention", "call", "dismiss", "scheduled_seal", "test"])
+      json!([
+        "message",
+        "mention",
+        "call",
+        "dismiss",
+        "scheduled_seal",
+        "sync",
+        "test"
+      ])
     );
   }
 }

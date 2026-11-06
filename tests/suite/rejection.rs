@@ -331,6 +331,24 @@ mod limits {
   }
 
   #[tokio::test]
+  async fn sync_wakes_have_a_budget_of_their_own() {
+    let mut limits = config(1000, 1000, 1000, 2);
+    limits.limits.sync_pushes_per_token_per_minute = 2;
+    let gateway = Gateway::start_with(limits).await;
+    let client = gateway.register_client().await;
+    for _ in 0..2 {
+      let reply = gateway.push(&client, &push_body("fcm", "sync", FCM_TOKEN)).await;
+      assert_eq!(reply.status(), 200);
+    }
+    let over = gateway.push(&client, &push_body("fcm", "sync", FCM_TOKEN)).await;
+    assert_eq!(over.status(), 429);
+    let message = gateway
+      .push(&client, &push_body("fcm", "message", FCM_TOKEN))
+      .await;
+    assert_eq!(message.status(), 200, "messages have their own");
+  }
+
+  #[tokio::test]
   async fn wakes_to_seal_have_a_budget_of_their_own() {
     let mut limits = config(1000, 1000, 1000, 2);
     limits.limits.seal_pushes_per_token_per_minute = 2;
