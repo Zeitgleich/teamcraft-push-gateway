@@ -8,6 +8,12 @@ the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
 ### Changed
 
+- One production gateway also delivers to builds run from Xcode (APNs sandbox tokens): with
+  `apns.sandbox_fallback` (default on unless `use_sandbox`), a push production refuses as `BadDeviceToken`
+  is tried once in the sandbox, and the token is only `token_gone` if both environments refuse it.
+  Sandbox tokens are remembered (`apns.sandbox_cache_size`, default 10 000) so later pushes go there
+  directly; `/metrics` counts `apns_sandbox_fallbacks_total` and `apns_sandbox_deliveries_total`. The
+  HTTP contract is unchanged.
 - New wake-up kind `sync`, listed in `/v1/info`: the device fetches messages it got no visible push for in
   the background (TeamCraft notifications.md, "Sync wake-ups"). Silent and delivered like `dismiss`
   (APNs background push, FCM data message at normal priority, whatever the `urgency`), with a per-token

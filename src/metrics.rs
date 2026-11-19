@@ -78,8 +78,9 @@ impl Metrics {
     self.registrations.fetch_add(1, Ordering::Relaxed);
   }
 
-  /// The exposition text; `servers` is the number of registered servers.
-  pub fn render(&self, servers: u64) -> String {
+  /// The exposition text; `servers` is the number of registered servers, `extra` the push
+  /// services' own counters (name without prefix, value).
+  pub fn render(&self, servers: u64, extra: &[(&'static str, u64)]) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# TYPE {PREFIX}_pushes_total counter");
     for (index, provider) in PROVIDERS.iter().enumerate() {
@@ -104,6 +105,10 @@ impl Metrics {
     );
     let _ = writeln!(out, "# TYPE {PREFIX}_servers gauge");
     let _ = writeln!(out, "{PREFIX}_servers {servers}");
+    for (name, value) in extra {
+      let _ = writeln!(out, "# TYPE {PREFIX}_{name} counter");
+      let _ = writeln!(out, "{PREFIX}_{name} {value}");
+    }
     out
   }
 }
@@ -128,11 +133,12 @@ mod tests {
     metrics.count_push(&PushProvider::Unknown("webpush".into()), PushResult::Accepted);
     metrics.count_refusal(Refusal::Blocked);
     metrics.count_registration();
-    let text = metrics.render(3);
+    let text = metrics.render(3, &[("apns_sandbox_deliveries_total", 2)]);
     assert!(text.contains("pushes_total{provider=\"apns\",result=\"accepted\"} 1"));
     assert!(text.contains("pushes_total{provider=\"fcm\",result=\"token_gone\"} 1"));
     assert!(text.contains("refused_total{reason=\"blocked\"} 1"));
     assert!(text.contains("registrations_total 1"));
     assert!(text.contains("_servers 3"));
+    assert!(text.contains("teamcraft_push_gateway_apns_sandbox_deliveries_total 2"));
   }
 }

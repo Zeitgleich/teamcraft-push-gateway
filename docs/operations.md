@@ -43,8 +43,19 @@ lists every option with its default.
 - **Credentials:** `[apns]` (the `.p8` key, key ID, team ID, bundle ID) and `[fcm]` (the Firebase service
   account key), as files or `TEAMCRAFT_PUSH_GATEWAY__APNS__KEY` / `__FCM__SERVICE_ACCOUNT`. A partial setup stops
   the start. The gateway is the only place these credentials live.
-- **APNs sandbox vs production:** a token only works in the environment its build was signed for. One
-  gateway serves one (`apns.use_sandbox`); run a second one for development builds.
+- **APNs sandbox vs production:** a token only works in the environment its build was signed for:
+  TestFlight and App Store builds use production, builds run from Xcode (`aps-environment`
+  `development`) the sandbox. A production gateway (`apns.use_sandbox = false`) serves both with
+  `apns.sandbox_fallback` (default on there): a push production refuses as `400 BadDeviceToken` is sent
+  once more to the sandbox, with the same provider token (the key works in both environments). Only if
+  the sandbox refuses it too is the token gone (`410 token_gone`); a `410 Unregistered` or any other
+  error is never retried there. Tokens the sandbox took are remembered (`apns.sandbox_cache_size`,
+  default 10 000, oldest forgotten first; kept in memory as SHA-256 digests, never written or logged), so
+  their later pushes skip production; after a restart each costs one refused production request again.
+  A fallback push can take up to twice `server.provider_timeout_secs`. `/metrics` counts
+  `apns_sandbox_fallbacks_total` (pushes tried in the sandbox) and `apns_sandbox_deliveries_total`
+  (pushes it accepted). With `sandbox_fallback = false` the gateway serves production only, as before;
+  a gateway with `use_sandbox = true` serves only the sandbox and refuses `sandbox_fallback = true`.
 - **Listeners:** `server.bind` is the API (dual stack, `[::]:8090`); `server.health_bind` carries
   `/healthz` and `/metrics` and defaults to loopback. Behind a reverse proxy set
   `server.client_ip_header` (the last entry counts); only the registration limits use the client address.
@@ -100,7 +111,8 @@ timeouts and a connection limit: the gateway itself only limits how long a reque
 ## Monitoring and logs
 
 `/healthz` (database reachable) and `/metrics` (Prometheus text): `teamcraft_push_gateway_pushes_total{provider,result}`,
-`..._refused_total{reason}`, `..._registrations_total`, `..._servers`. No server ID, token or payload is ever a
+`..._refused_total{reason}`, `..._registrations_total`, `..._servers`, and with the APNs sandbox fallback
+`..._apns_sandbox_fallbacks_total` and `..._apns_sandbox_deliveries_total`. No server ID, token or payload is ever a
 label or a log field. Alert on `result="rejected"` (credentials refused) and `"unavailable"`.
 Logs (`RUST_LOG`, default `info`): start-up, configuration problems and provider refusals with their
 status codes.

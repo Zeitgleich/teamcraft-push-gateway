@@ -419,7 +419,7 @@ async fn metrics_handler(State(state): State<AppState>) -> Response {
   let servers = state.store.count_servers().await.unwrap_or(0);
   (
     [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
-    state.metrics.render(servers),
+    state.metrics.render(servers, &state.providers.counters()),
   )
     .into_response()
 }

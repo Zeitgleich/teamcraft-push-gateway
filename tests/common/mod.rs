@@ -56,6 +56,8 @@ pub struct Gateway {
   pub internal_url: String,
   pub state: AppState,
   pub apns: Fake,
+  /// The fake APNs sandbox; only used by a gateway started with [`Gateway::start_with_sandbox_fallback`].
+  pub apns_sandbox: Fake,
   pub fcm: Fake,
   http: reqwest::Client,
 }
@@ -81,7 +83,18 @@ impl Gateway {
   }
 
   pub async fn start_with(config: GatewayConfig) -> Self {
+    Self::start_with_apns(config, None).await
+  }
+
+  /// A gateway whose APNs sender falls back to the fake sandbox, remembering up to `cache_size`
+  /// sandbox tokens.
+  pub async fn start_with_sandbox_fallback(cache_size: usize) -> Self {
+    Self::start_with_apns(default_config(), Some(cache_size)).await
+  }
+
+  async fn start_with_apns(config: GatewayConfig, maybe_sandbox_cache: Option<usize>) -> Self {
     let (apns, apns_url) = push_fakes::apns().await;
+    let (apns_sandbox, apns_sandbox_url) = push_fakes::apns().await;
     let (fcm, fcm_url) = push_fakes::fcm().await;
     let timeout = Duration::from_secs(5);
     let apns_sender: Arc<dyn TokenSender> = Arc::new(
@@ -91,6 +104,8 @@ impl Gateway {
         team_id: push_fakes::APNS_TEAM_ID.into(),
         bundle_id: push_fakes::APNS_BUNDLE_ID.into(),
         base_url: apns_url,
+        maybe_sandbox_url: maybe_sandbox_cache.map(|_| apns_sandbox_url),
+        sandbox_cache_size: maybe_sandbox_cache.unwrap_or(0),
         alert_text: "New message".into(),
         timeout,
       })
@@ -108,7 +123,9 @@ impl Gateway {
       maybe_apns: Some(apns_sender),
       maybe_fcm: Some(fcm_sender),
     };
-    Self::start_with_providers(config, providers, apns, fcm).await
+    let mut gateway = Self::start_with_providers(config, providers, apns, fcm).await;
+    gateway.apns_sandbox = apns_sandbox;
+    gateway
   }
 
   pub async fn start_with_providers(
@@ -123,11 +140,13 @@ impl Gateway {
     let url = serve(api_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>()).await;
     let internal_url =
       serve(internal_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>()).await;
+    let (apns_sandbox, _) = push_fakes::apns().await;
     Self {
       url,
       internal_url,
       state,
       apns,
+      apns_sandbox,
       fcm,
       http: reqwest::Client::new(),
     }
@@ -145,6 +164,7 @@ impl Gateway {
       internal_url,
       state,
       apns: self.apns.clone(),
+      apns_sandbox: self.apns_sandbox.clone(),
       fcm: self.fcm.clone(),
       http: reqwest::Client::new(),
     }
