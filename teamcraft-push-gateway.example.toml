@@ -73,6 +73,12 @@ timestamp_window_secs = 300
 # team_id = "DEF456GHIJ"
 # bundle_id = "com.example.teamcraft"   # calls go to "<bundle_id>.voip"
 # use_sandbox = false
+# On a production gateway, also deliver to builds run from Xcode (sandbox tokens): a token production
+# refuses as BadDeviceToken is tried once in the sandbox, and only gone if both refuse. Default: on
+# unless use_sandbox.
+# sandbox_fallback = true
+# How many sandbox tokens are remembered (as digests, in memory), so their pushes skip production.
+# sandbox_cache_size = 10000
 # alert_text = "New message"            # generic; the app's notification extension replaces it
 
 # The credentials of the published Android app (Firebase project).

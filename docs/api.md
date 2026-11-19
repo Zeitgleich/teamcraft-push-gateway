@@ -128,8 +128,8 @@ Response `200`: `{"accepted": true}` once the push service accepted the wake-up.
 | 501  | `provider_not_configured`                                                                   | The gateway has no credentials for this provider                                                      |
 | 502  | `provider_unavailable`, `provider_rejected`                                                 | Apple/Google down, or the gateway's own credentials refused; retry later (after `Retry-After`)        |
 
-`token_gone` and the sealed-token codes (all `410`) mean a device registration is dead (APNs `410`, `BadDeviceToken`,
-`DeviceTokenNotForTopic`; FCM `UNREGISTERED`, `404`). Provider internals (Apple's `reason`, Google's
+`token_gone` and the sealed-token codes (all `410`) mean a device registration is dead (APNs `410`, `BadDeviceToken`
+(from both environments when the gateway falls back to the sandbox), `DeviceTokenNotForTopic`; FCM `UNREGISTERED`, `404`). Provider internals (Apple's `reason`, Google's
 status) stay in the gateway's log.
 
 ## 5. `GET /v1/info`

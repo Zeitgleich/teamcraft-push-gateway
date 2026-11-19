@@ -31,6 +31,15 @@ impl Providers {
     }
   }
 
+  /// The senders' own counters, for `/metrics`.
+  pub fn counters(&self) -> Vec<(&'static str, u64)> {
+    [&self.maybe_apns, &self.maybe_fcm]
+      .into_iter()
+      .flatten()
+      .flat_map(|sender| sender.counters())
+      .collect()
+  }
+
   /// The providers with credentials.
   pub fn configured(&self) -> Vec<PushProvider> {
     [
@@ -69,17 +78,38 @@ impl Providers {
         .into()
       });
       require_tls(&base_url, "apns.base_url")?;
+      let is_fallback_on = apns.maybe_sandbox_fallback.unwrap_or(!apns.use_sandbox);
+      anyhow::ensure!(
+        !(is_fallback_on && apns.use_sandbox),
+        "apns.sandbox_fallback only applies to a production gateway (use_sandbox = false)"
+      );
+      let maybe_sandbox_url = if is_fallback_on {
+        let url = apns
+          .maybe_sandbox_base_url
+          .clone()
+          .unwrap_or_else(|| APNS_SANDBOX_URL.into());
+        require_tls(&url, "apns.sandbox_base_url")?;
+        Some(url)
+      } else {
+        None
+      };
       let sender = ApnsSender::new(ApnsSettings {
         key_pem,
         key_id: required(&apns.maybe_key_id, "key_id")?,
         team_id: required(&apns.maybe_team_id, "team_id")?,
         bundle_id: required(&apns.maybe_bundle_id, "bundle_id")?,
         base_url,
+        maybe_sandbox_url,
+        sandbox_cache_size: apns.sandbox_cache_size,
         alert_text: apns.alert_text.clone(),
         timeout,
       })
       .context("apns")?;
-      info!("APNs enabled");
+      info!(
+        sandbox_fallback = is_fallback_on,
+        sandbox = apns.use_sandbox,
+        "APNs enabled"
+      );
       providers.maybe_apns = Some(Arc::new(sender));
     } else {
       anyhow::ensure!(
@@ -178,5 +208,18 @@ mod tests {
     let mut config = GatewayConfig::default();
     config.apns.maybe_team_id = Some("T".into());
     assert!(Providers::from_config(&config).is_err());
+  }
+
+  #[test]
+  fn a_sandbox_gateway_has_no_sandbox_fallback() {
+    let mut config = GatewayConfig::default();
+    config.apns.maybe_key = Some("not checked before the settings".to_owned().into());
+    config.apns.maybe_key_id = Some("K".into());
+    config.apns.maybe_team_id = Some("T".into());
+    config.apns.maybe_bundle_id = Some("com.example.app".into());
+    config.apns.use_sandbox = true;
+    config.apns.maybe_sandbox_fallback = Some(true);
+    let error = Providers::from_config(&config).err().unwrap();
+    assert!(error.to_string().contains("sandbox_fallback"), "{error}");
   }
 }

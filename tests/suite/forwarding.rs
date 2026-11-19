@@ -582,3 +582,166 @@ async fn usage_is_counted_per_server_and_flushed_to_the_store() {
   let usage = gateway.state.store.usage(&client.server_id, day).await.unwrap();
   assert_eq!((usage.accepted, usage.gone, usage.failed), (2, 1, 0));
 }
+
+/// One production gateway also reaches builds run from Xcode, whose tokens belong to the APNs sandbox.
+mod sandbox_fallback {
+  use super::*;
+
+  async fn metrics(gateway: &Gateway) -> String {
+    gateway.get_internal("/metrics").await.text().await.unwrap()
+  }
+
+  #[tokio::test]
+  async fn a_token_production_refuses_is_delivered_through_the_sandbox() {
+    let gateway = Gateway::start_with_sandbox_fallback(100).await;
+    let client = gateway.register_client().await;
+    gateway.apns.set_reply(400, json!({"reason": "BadDeviceToken"}));
+
+    let response = gateway
+      .push(&client, &push_body("apns", "message", APNS_TOKEN))
+      .await;
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(gateway.apns.requests().len(), 1);
+    let sandbox = gateway.apns_sandbox.requests();
+    assert_eq!(sandbox.len(), 1);
+    // The same push, with the same provider token.
+    assert_eq!(sandbox[0].path, format!("/3/device/{APNS_TOKEN}"));
+    assert_eq!(sandbox[0].header("apns-topic"), push_fakes::APNS_BUNDLE_ID);
+    assert_eq!(
+      sandbox[0].header("authorization"),
+      gateway.apns.requests()[0].header("authorization")
+    );
+    assert_eq!(sealed_from(sandbox[0].json()["w"].as_str().unwrap()), SEALED);
+
+    let metrics = metrics(&gateway).await;
+    assert!(metrics.contains("apns_sandbox_fallbacks_total 1"), "{metrics}");
+    assert!(metrics.contains("apns_sandbox_deliveries_total 1"), "{metrics}");
+    assert!(
+      metrics.contains("pushes_total{provider=\"apns\",result=\"accepted\"} 1"),
+      "{metrics}"
+    );
+    assert!(!metrics.contains(APNS_TOKEN));
+  }
+
+  #[tokio::test]
+  async fn a_token_both_environments_refuse_is_gone() {
+    let gateway = Gateway::start_with_sandbox_fallback(100).await;
+    let client = gateway.register_client().await;
+    gateway.apns.set_reply(400, json!({"reason": "BadDeviceToken"}));
+    gateway
+      .apns_sandbox
+      .set_reply(400, json!({"reason": "BadDeviceToken"}));
+
+    let response = gateway
+      .push(&client, &push_body("apns", "message", APNS_TOKEN))
+      .await;
+
+    assert_eq!(response.status(), 410);
+    assert_eq!(
+      response.json::<Value>().await.unwrap()["error_code"],
+      "token_gone"
+    );
+    assert_eq!(gateway.apns_sandbox.requests().len(), 1);
+    assert!(
+      metrics(&gateway)
+        .await
+        .contains("apns_sandbox_deliveries_total 0")
+    );
+  }
+
+  #[tokio::test]
+  async fn a_known_sandbox_token_skips_production() {
+    let gateway = Gateway::start_with_sandbox_fallback(100).await;
+    let client = gateway.register_client().await;
+    gateway.apns.set_reply(400, json!({"reason": "BadDeviceToken"}));
+
+    for _ in 0..3 {
+      let response = gateway
+        .push(&client, &push_body("apns", "message", APNS_TOKEN))
+        .await;
+      assert_eq!(response.status(), 200);
+    }
+
+    assert_eq!(gateway.apns.requests().len(), 1);
+    assert_eq!(gateway.apns_sandbox.requests().len(), 3);
+    let metrics = metrics(&gateway).await;
+    assert!(metrics.contains("apns_sandbox_fallbacks_total 1"), "{metrics}");
+    assert!(metrics.contains("apns_sandbox_deliveries_total 3"), "{metrics}");
+  }
+
+  #[tokio::test]
+  async fn without_a_cache_every_push_asks_production_first() {
+    let gateway = Gateway::start_with_sandbox_fallback(0).await;
+    let client = gateway.register_client().await;
+    gateway.apns.set_reply(400, json!({"reason": "BadDeviceToken"}));
+
+    for _ in 0..2 {
+      let response = gateway
+        .push(&client, &push_body("apns", "message", APNS_TOKEN))
+        .await;
+      assert_eq!(response.status(), 200);
+    }
+
+    assert_eq!(gateway.apns.requests().len(), 2);
+    assert_eq!(gateway.apns_sandbox.requests().len(), 2);
+  }
+
+  #[tokio::test]
+  async fn a_known_sandbox_token_the_sandbox_no_longer_knows_asks_production() {
+    let gateway = Gateway::start_with_sandbox_fallback(100).await;
+    let client = gateway.register_client().await;
+    gateway.apns.set_reply(400, json!({"reason": "BadDeviceToken"}));
+    let first = gateway
+      .push(&client, &push_body("apns", "message", APNS_TOKEN))
+      .await;
+    assert_eq!(first.status(), 200);
+
+    gateway
+      .apns_sandbox
+      .set_reply(400, json!({"reason": "BadDeviceToken"}));
+    gateway.apns.set_reply(200, Value::Null);
+    let second = gateway
+      .push(&client, &push_body("apns", "message", APNS_TOKEN))
+      .await;
+
+    assert_eq!(second.status(), 200);
+    assert_eq!(gateway.apns.requests().len(), 2);
+    assert_eq!(gateway.apns_sandbox.requests().len(), 2);
+  }
+
+  #[tokio::test]
+  async fn unregistered_and_other_refusals_are_never_tried_in_the_sandbox() {
+    for (status, reason, expected) in [
+      (410, "Unregistered", 410),
+      (400, "DeviceTokenNotForTopic", 410),
+      (400, "BadTopic", 502),
+    ] {
+      let gateway = Gateway::start_with_sandbox_fallback(100).await;
+      let client = gateway.register_client().await;
+      gateway.apns.set_reply(status, json!({"reason": reason}));
+
+      let response = gateway
+        .push(&client, &push_body("apns", "message", APNS_TOKEN))
+        .await;
+
+      assert_eq!(response.status(), expected, "{reason}");
+      assert!(gateway.apns_sandbox.requests().is_empty(), "{reason}");
+    }
+  }
+
+  #[tokio::test]
+  async fn without_the_fallback_a_sandbox_token_is_gone() {
+    let gateway = Gateway::start().await;
+    let client = gateway.register_client().await;
+    gateway.apns.set_reply(400, json!({"reason": "BadDeviceToken"}));
+
+    let response = gateway
+      .push(&client, &push_body("apns", "message", APNS_TOKEN))
+      .await;
+
+    assert_eq!(response.status(), 410);
+    assert!(gateway.apns_sandbox.requests().is_empty());
+    assert!(!metrics(&gateway).await.contains("apns_sandbox"));
+  }
+}

@@ -85,6 +85,11 @@ pub fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
 pub trait TokenSender: Send + Sync {
   fn send<'a>(&'a self, token: &'a str, message: &'a PushMessage)
   -> BoxFuture<'a, Result<(), ProviderError>>;
+
+  /// Counters of the sender's own (name, value), for `/metrics`. Aggregates only, like all metrics.
+  fn counters(&self) -> Vec<(&'static str, u64)> {
+    Vec::new()
+  }
 }
 
 /// Where and what kind of JSON error, without serde's quote of the input (which can be a private

@@ -154,11 +154,22 @@ pub struct ApnsConfig {
   #[serde(rename = "bundle_id")]
   pub maybe_bundle_id: Option<String>,
   pub use_sandbox: bool,
+  /// On a production gateway, also deliver to sandbox tokens (builds run from Xcode): a token
+  /// production refuses as `BadDeviceToken` is tried once in the sandbox, and only gone if both refuse.
+  /// Default: on unless `use_sandbox`.
+  #[serde(rename = "sandbox_fallback")]
+  pub maybe_sandbox_fallback: Option<bool>,
+  /// How many sandbox tokens are remembered, so their pushes skip production (0: none; each then
+  /// costs a refused production request first).
+  pub sandbox_cache_size: usize,
   /// Visible text of the generic alert the notification extension replaces. Fixed here, so a server
   /// cannot show its own text on someone's lock screen.
   pub alert_text: String,
   #[serde(rename = "base_url")]
   pub maybe_base_url: Option<String>,
+  /// Where the sandbox fallback sends (default: Apple's sandbox).
+  #[serde(rename = "sandbox_base_url")]
+  pub maybe_sandbox_base_url: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -249,8 +260,11 @@ impl Default for ApnsConfig {
       maybe_team_id: None,
       maybe_bundle_id: None,
       use_sandbox: false,
+      maybe_sandbox_fallback: None,
+      sandbox_cache_size: 10_000,
       alert_text: "New message".into(),
       maybe_base_url: None,
+      maybe_sandbox_base_url: None,
     }
   }
 }
