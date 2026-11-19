@@ -51,7 +51,7 @@ jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls", "http2"] }
 # The state store: a few small tables on the gateway's own disk (docs/design.md §6).
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 secrecy = { version = "0.10", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
