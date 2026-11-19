@@ -6,6 +6,11 @@ the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
 ## [Unreleased]
 
+### Security
+
+- Bundled SQLite 3.54.1 (`rusqlite` 0.41), fixing RUSTSEC-2026-0459 (uninitialized page-cache memory with a
+  crafted `-wal` file). The gateway only opens its own database, so it was not exposed.
+
 ### Changed
 
 - One production gateway also delivers to builds run from Xcode (APNs sandbox tokens): with
