@@ -47,7 +47,7 @@ hpke-rs = { version = "0.7", default-features = false, features = ["std"] }
 hpke-rs-crypto = "0.7"
 hpke-rs-rust-crypto = "0.7"
 # The APNs provider token (ES256) and the Google service account assertion (RS256).
-jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "12", features = ["aws_lc_rs"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls", "http2"] }
 # The state store: a few small tables on the gateway's own disk (docs/design.md §6).
